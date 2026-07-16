@@ -3,9 +3,11 @@
 import type { LocalUserChoices } from "@livekit/components-react";
 import {
   ConnectionStateToast,
+  ControlBar,
   LiveKitRoom,
   PreJoin,
-  VideoConference,
+  useLocalParticipant,
+  VideoTrack,
 } from "@livekit/components-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -13,6 +15,32 @@ import { useState } from "react";
 interface TokenResponse {
   participant_token: string;
   server_url: string;
+}
+
+function LocalCameraTile() {
+  const { localParticipant, isCameraEnabled } = useLocalParticipant();
+  const publication = localParticipant.getTrackPublication("camera" as never);
+  const track = publication?.track;
+
+  return (
+    <div className="flex flex-1 items-center justify-center bg-black">
+      {isCameraEnabled && track && publication ? (
+        <VideoTrack
+          className="h-full w-full object-cover"
+          trackRef={{
+            participant: localParticipant,
+            publication,
+            source: "camera" as never,
+          }}
+        />
+      ) : (
+        <div className="flex flex-col items-center gap-3 text-white/60">
+          <span className="text-4xl">📷</span>
+          <p className="text-sm">Camera is off</p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ReflexCall() {
@@ -59,7 +87,7 @@ export function ReflexCall() {
   }
 
   return (
-    <div className="h-screen w-screen">
+    <div className="flex h-screen w-screen flex-col">
       <LiveKitRoom
         audio={true}
         className="flex h-full flex-col"
@@ -68,7 +96,11 @@ export function ReflexCall() {
         token={tokenResponse.participant_token}
         video={true}
       >
-        <VideoConference />
+        <LocalCameraTile />
+        <ControlBar
+          controls={{ chat: false, screenShare: false, settings: false }}
+          variation="minimal"
+        />
         <ConnectionStateToast />
       </LiveKitRoom>
     </div>
