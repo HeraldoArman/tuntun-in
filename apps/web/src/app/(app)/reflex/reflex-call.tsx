@@ -1,5 +1,8 @@
 "use client";
 
+import "@livekit/components-styles/dist/general/index.css";
+import "@livekit/components-styles/dist/general/themes/default.css";
+
 import type { LocalUserChoices } from "@livekit/components-react";
 import {
   ControlBar,
