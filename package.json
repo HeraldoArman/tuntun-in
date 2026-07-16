@@ -1,0 +1,33 @@
+{
+  "name": "tuntun-in",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "nx run-many -t dev",
+    "build": "nx run-many -t build",
+    "check-types": "nx run-many -t check-types",
+    "dev:web": "nx run-many -t dev --projects=web",
+    "dev:server": "nx run-many -t dev --projects=@tuntun-in/backend",
+    "dev:setup": "nx run-many -t dev:setup --projects=@tuntun-in/backend",
+    "check": "ultracite check",
+    "fix": "ultracite fix"
+  },
+  "dependencies": {
+    "@tuntun-in/env": "workspace:*",
+    "dotenv": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.2",
+    "@tuntun-in/config": "workspace:*",
+    "@types/node": "^22.13.14",
+    "nx": "^23.0.1",
+    "typescript": "catalog:",
+    "ultracite": "7.9.3"
+  },
+  "packageManager": "pnpm@11.13.1"
+}

@@ -1,0 +1,40 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3001",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@convex-dev/agent": "catalog:",
+    "@convex-dev/better-auth": "catalog:",
+    "@swc/helpers": "^0.5.23",
+    "@tanstack/react-form": "^1.33.0",
+    "@tuntun-in/backend": "workspace:*",
+    "@tuntun-in/env": "workspace:*",
+    "@tuntun-in/ui": "workspace:*",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "better-auth": "catalog:",
+    "convex": "catalog:",
+    "dotenv": "catalog:",
+    "lucide-react": "catalog:",
+    "next": "^16.2.0",
+    "next-themes": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "sonner": "catalog:",
+    "streamdown": "^2.5.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "catalog:",
+    "@tuntun-in/config": "workspace:*",
+    "@types/node": "^20",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:"
+  }
+}
