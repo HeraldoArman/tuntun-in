@@ -7,13 +7,12 @@
     "./web": "./src/web.ts"
   },
   "dependencies": {
-    "@t3-oss/env-nextjs": "^0.13.11",
+    "@t3-oss/env-nextjs": "^0.13.1",
     "dotenv": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@tuntun-in/config": "workspace:*",
-    "@types/node": "^22.13.14",
     "typescript": "catalog:"
   }
 }
