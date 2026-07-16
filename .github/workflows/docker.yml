@@ -1,0 +1,22 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build agent image
+        run: docker build -f apps/agent/Dockerfile -t tuntun-agent .
+
+      - name: Build web image
+        run: docker build -f apps/web/Dockerfile -t tuntun-web .
+        continue-on-error: true
