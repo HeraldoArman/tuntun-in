@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Chest-mounted phones should use the rear (environment) camera by default,
@@ -557,6 +557,53 @@ function LocalCameraPreview() {
   );
 }
 
+/**
+ * Force the microphone and rear camera ON once the room connects, so the
+ * Reflex AI always starts with a live audio + video feed regardless of the
+ * PreJoin toggle state. Runs exactly once per connection — after that the user
+ * may still toggle freely via the control dock in LocalCameraPreview.
+ *
+ * Why: the `audio`/`video` props on <LiveKitRoom> only set the *initial*
+ * publish intent. If a toggle lands off (or the initial publish races), the
+ * agent could start without media. This is a safety net that guarantees both
+ * tracks are published before the session is considered live.
+ */
+function ForceMediaOn() {
+  const { localParticipant } = useLocalParticipant();
+  const didEnable = useRef(false);
+
+  // localParticipant.sid is populated once the room has actually connected
+  // and the participant is registered, so it's a reliable "connected" signal
+  // without wiring an extra RoomEvent listener.
+  useEffect(() => {
+    if (didEnable.current || !localParticipant.sid) {
+      return;
+    }
+    didEnable.current = true;
+
+    const enable = async () => {
+      try {
+        await localParticipant.setMicrophoneEnabled(true);
+        log("ForceMediaOn: microphone enabled");
+      } catch (err) {
+        logError("ForceMediaOn: microphone enable failed:", err);
+      }
+      try {
+        // Pass the rear-camera capture options so re-enabling keeps the
+        // environment-facing camera, not the default selfie cam.
+        await localParticipant.setCameraEnabled(true, REAR_CAMERA_CAPTURE);
+        log("ForceMediaOn: rear camera enabled");
+      } catch (err) {
+        logError("ForceMediaOn: rear camera enable failed:", err);
+      }
+    };
+
+    enable().catch((err) => logError("ForceMediaOn: unexpected failure:", err));
+  }, [localParticipant]);
+
+  return null;
+}
+
 export function ReflexCall() {
   const router = useRouter();
   const [tokenResponse, setTokenResponse] = useState<TokenResponse | null>(
@@ -701,6 +748,7 @@ export function ReflexCall() {
         token={tokenResponse.participant_token}
         video={REAR_CAMERA_CAPTURE}
       >
+        <ForceMediaOn />
         <RoomEventLogger />
         <GpsPublisher />
         <ProfilePublisher />
