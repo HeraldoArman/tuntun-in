@@ -126,7 +126,7 @@ async def send_whatsapp(phone: str, message: str) -> bool:
     device_id = os.environ.get("GOWA_DEVICE_ID", "")
     if not base_url or not device_id:
         logger.warning(
-            "Overwatch: GoWA not configured (GOWA_BASE_URL/GOWA_DEVICE_ID)  "
+            "Overwatch: GoWA not configured (GOWA_BASE_URL/GOWA_DEVICE_ID) - "
             "skipping WhatsApp send"
         )
         return False
