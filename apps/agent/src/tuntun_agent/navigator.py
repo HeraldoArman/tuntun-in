@@ -113,8 +113,7 @@ async def _places_text_search(
         results = data.get("results") or []
         if not results:
             logger.warning(
-                "Places text search no results: query=%r status=%s "
-                "elapsed=%.1fms",
+                "Places text search no results: query=%r status=%s elapsed=%.1fms",
                 query,
                 data.get("status"),
                 elapsed_ms,
@@ -184,18 +183,24 @@ async def _resolve_destination(
         coords = await _geocode(api_key, destination)
         if coords is not None:
             return coords, destination
-        logger.warning("Navigator resolve: neither Places nor geocode resolved %r", destination)
+        logger.warning(
+            "Navigator resolve: neither Places nor geocode resolved %r", destination
+        )
         return None
 
     coords = await _geocode(api_key, destination)
     if coords is not None:
         return coords, destination
     # Geocode missed — try a nearby Places search (chain/shop names).
-    logger.info("Navigator resolve: geocode missed -> Places fallback for %r", destination)
+    logger.info(
+        "Navigator resolve: geocode missed -> Places fallback for %r", destination
+    )
     hit = await _places_text_search(api_key, destination, origin)
     if hit is not None:
         return (hit[0], hit[1]), hit[2]
-    logger.warning("Navigator resolve: geocode + Places both missed for %r", destination)
+    logger.warning(
+        "Navigator resolve: geocode + Places both missed for %r", destination
+    )
     return None
 
 
@@ -265,8 +270,7 @@ async def fetch_route_and_reply(
     async-tool pattern (return fast, speak result later) to avoid dead-air."""
     t0 = time.monotonic()
     logger.info(
-        "Deep Navigator fetch start: destination=%r origin=(%.6f, %.6f) "
-        "api_key_len=%d",
+        "Deep Navigator fetch start: destination=%r origin=(%.6f, %.6f) api_key_len=%d",
         destination,
         origin[0],
         origin[1],

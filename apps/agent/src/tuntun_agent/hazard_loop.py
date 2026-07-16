@@ -83,8 +83,17 @@ _CLASSIFY_PROMPT = (
     "- low: minor additional info — uneven pavement, low-hanging banner/awning, "
     "hanging wires, a parked motorcycle on the sidewalk.\n"
     "Return JSON {hazards:[{description,priority}]}. Use a short spatial "
-    "description (e.g. 'open manhole 2m ahead center', 'motorcycle on left'). "
-    "Return an empty hazards array if the path is clear. Do not invent hazards."
+    "description (e.g. 'open manhole 2m ahead center', 'motorcycle on left').\n"
+    "RETURN AN EMPTY hazards ARRAY when any of these hold — do not invent a "
+    "hazard to fill the silence:\n"
+    "- the image is dark, black, underexposed, or the camera appears covered;\n"
+    "- the image is blurry, smeared, or too low-quality to identify ground "
+    "features;\n"
+    "- no street, sidewalk, path, or ground is visible (e.g. indoor, a wall, "
+    "sky only, a person's face or body filling the frame with no walking path);\n"
+    "- the path ahead is clear and unobstructed.\n"
+    "Never describe a hazard you cannot visually locate in the frame. If in "
+    "doubt, return an empty array."
 )
 
 

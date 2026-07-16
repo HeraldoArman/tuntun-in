@@ -295,7 +295,9 @@ class HeyTutuDetector:
         """
         # Only interrupt if the agent is currently speaking — when idle (the
         # common wake case) interrupt is a wasted round trip.
-        state = getattr(self._session.agent_state, "value", str(self._session.agent_state))
+        state = getattr(
+            self._session.agent_state, "value", str(self._session.agent_state)
+        )
         if state == "speaking":
             try:
                 await self._session.interrupt()

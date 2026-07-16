@@ -19,7 +19,7 @@ import { Button } from "@tuntun-in/ui/components/button";
 import { cn } from "@tuntun-in/ui/lib/utils";
 import { useMutation, useQuery } from "convex/react";
 import type { VideoCaptureOptions } from "livekit-client";
-import { RoomEvent, Track } from "livekit-client";
+import { ConnectionState, RoomEvent, Track } from "livekit-client";
 import {
   ArrowLeft,
   Camera,
@@ -316,6 +316,11 @@ function GpsPublisher() {
     );
 
     let lastPublished = 0;
+    // Cache the most recent fix so it can be re-published when the agent
+    // joins late (the first watchPosition fire often happens before the
+    // agent's room is connected, so the agent never receives it) or when the
+    // device is stationary and watchPosition hasn't fired again.
+    let lastFix: { lat: number; lng: number; accuracy?: number } | null = null;
     let watchId: number | null = null;
 
     const publishFix = (lat: number, lng: number, accuracy?: number) => {
@@ -331,7 +336,7 @@ function GpsPublisher() {
       // Drop the fix if the room isn't connected yet — publishing now would
       // throw NegotiationError on a closed engine. watchPosition will fire
       // again after connect, so we just skip this one.
-      if (!room.isConnected()) {
+      if (room.state !== ConnectionState.Connected) {
         log(
           "GpsPublisher — room not connected yet (state:",
           room.state,
@@ -365,6 +370,11 @@ function GpsPublisher() {
     };
 
     const onSuccess = (pos: GeolocationPosition) => {
+      lastFix = {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+      };
       publishFix(
         pos.coords.latitude,
         pos.coords.longitude,
@@ -392,11 +402,42 @@ function GpsPublisher() {
       logError("GpsPublisher — watchPosition threw:", err);
     }
 
+    // Periodic re-publish: watchPosition only fires when the position
+    // changes, so a stationary device may never send a second fix. The agent
+    // joins the room after the web client (dispatched by LiveKit Cloud), so
+    // it often misses the first publish. Re-publishing the cached fix every
+    // GPS_PUBLISH_MS guarantees the agent receives it within a few seconds.
+    const republish = () => {
+      if (!lastFix) {
+        return;
+      }
+      // Reset the throttle so a late-arriving agent gets the fix even if we
+      // just published (a new participant joined — they missed that one).
+      lastPublished = 0;
+      publishFix(lastFix.lat, lastFix.lng, lastFix.accuracy);
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (lastFix && room.state === ConnectionState.Connected) {
+        republish();
+      }
+    }, GPS_PUBLISH_MS);
+
+    // Re-publish immediately when a new participant connects so a
+    // late-arriving agent doesn't have to wait for the next interval.
+    const onParticipantConnected = () => {
+      log("GpsPublisher — participant connected, re-publishing cached gps fix");
+      republish();
+    };
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+
     return () => {
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         log("GpsPublisher — watchPosition cleared, id:", watchId);
       }
+      window.clearInterval(intervalId);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
     };
   }, [room, localParticipant]);
 
@@ -436,7 +477,7 @@ function ProfilePublisher() {
       // throws NegotiationError ("cannot negotiate on closed engine") when the
       // effect runs during the connecting phase (or after an HMR remount on a
       // closed engine). Defer to RoomEvent.Connected below.
-      if (!room.isConnected()) {
+      if (room.state !== ConnectionState.Connected) {
         log(
           "ProfilePublisher — room not connected yet (state:",
           room.state,

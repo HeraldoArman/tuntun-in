@@ -18,9 +18,11 @@ import {
   MarkerTooltip,
 } from "@/components/ui/map";
 
-// Jakarta default (lng, lat — MapLibre order) when no reports exist yet.
-const DEFAULT_CENTER: [number, number] = [106.8451, -6.2088];
-const DEFAULT_ZOOM = 12;
+// Default (lng, lat — MapLibre order) when no reports exist yet.
+const DEFAULT_CENTER: [number, number] = [
+  106.618_691_395_682_96, -6.257_145_712_100_773,
+];
+const DEFAULT_ZOOM = 15;
 
 interface HazardReport {
   _id: string;

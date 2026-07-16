@@ -18,6 +18,8 @@ import type * as http from "../http.js";
 import type * as overwatch from "../overwatch.js";
 import type * as overwatchAgent from "../overwatchAgent.js";
 import type * as privateData from "../privateData.js";
+import type * as seed from "../seed.js";
+import type * as seedInternal from "../seedInternal.js";
 import type * as userProfiles from "../userProfiles.js";
 
 import type {
@@ -37,6 +39,8 @@ declare const fullApi: ApiFromModules<{
   overwatch: typeof overwatch;
   overwatchAgent: typeof overwatchAgent;
   privateData: typeof privateData;
+  seed: typeof seed;
+  seedInternal: typeof seedInternal;
   userProfiles: typeof userProfiles;
 }>;
 

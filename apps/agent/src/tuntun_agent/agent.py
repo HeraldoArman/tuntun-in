@@ -159,7 +159,9 @@ class TuntunAgent(Agent):
         would respond immediately on join. Stay silent until the wake word (or
         the proactive hazard loop) opens a turn.
         """
-        logger.info("TuntunAgent.on_enter — agent joined the room (silent, awaiting wake word)")
+        logger.info(
+            "TuntunAgent.on_enter — agent joined the room (silent, awaiting wake word)"
+        )
 
     async def on_exit(self) -> None:
         """Called when agent is leaving the room."""
@@ -255,7 +257,9 @@ class TuntunAgent(Agent):
                 "about to step into an excavation pit",
                 "oncoming motorcycle on collision course").
         """
-        logger.warning("TOOL trigger_overwatch ENTER — reason=%r pid=%d", reason, os.getpid())
+        logger.warning(
+            "TOOL trigger_overwatch ENTER — reason=%r pid=%d", reason, os.getpid()
+        )
         spawn_background_task(trigger_overwatch_flow(self.session, reason))
         return (
             "Stay calm. I'm alerting your guardian now so they can see your "
@@ -329,8 +333,7 @@ class TuntunAgent(Agent):
                 landmark if known. Pass "unknown" if not.
         """
         logger.info(
-            "TOOL report_hazard_manual ENTER — description=%r location=%r "
-            "pid=%d",
+            "TOOL report_hazard_manual ENTER — description=%r location=%r pid=%d",
             description,
             location_description,
             os.getpid(),
@@ -349,12 +352,8 @@ class TuntunAgent(Agent):
             self.session, description, location_description
         )
         if report_id:
-            logger.info(
-                "report_hazard_manual: stored — reportId=%s", report_id
-            )
-            return (
-                f"Done — I added that to the hazard map. Report id {report_id}."
-            )
+            logger.info("report_hazard_manual: stored — reportId=%s", report_id)
+            return f"Done — I added that to the hazard map. Report id {report_id}."
         logger.warning(
             "report_hazard_manual: report_hazard_flow returned None — check "
             "Crowdsource logs (missing GPS / profileId / CONVEX_SERVICE_SECRET?)"

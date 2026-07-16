@@ -15,6 +15,9 @@ tool to snapshot.
 from __future__ import annotations
 
 import json
+import os
+import time
+from pathlib import Path
 from typing import Any
 
 from livekit import rtc
@@ -25,6 +28,37 @@ from tuntun_agent.logging_setup import get_logger
 from tuntun_agent.navigator import spawn_background_task
 
 logger = get_logger()
+
+# Rolling transcript file — one line per conversation turn, so the full dialog
+# is tailable without scraping interleaved nx stdout. Appended across sessions.
+_TRANSCRIPT_PATH = Path(os.environ.get("TUNTUN_TRANSCRIPT_FILE", "logs/transcript.log"))
+
+
+def _extract_text(item: Any) -> str:
+    """Best-effort text extraction from a ChatMessage item.
+
+    Realtime voice messages may carry AudioContent (no text) — fall back to
+    iterating the content list for plain strings. Returns "" if no text.
+    """
+    text = getattr(item, "text_content", None)
+    if text:
+        return text
+    content = getattr(item, "content", None) or []
+    return "".join(part for part in content if isinstance(part, str))
+
+
+def _append_transcript(role: Any, text: str) -> None:
+    """Append one turn to the transcript file (best-effort, never raises)."""
+    if not text:
+        return
+    try:
+        _TRANSCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{role}] {text}\n"
+        with _TRANSCRIPT_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception as exc:
+        logger.warning("transcript write failed: %s", exc)
+
 
 # Track source names (matching livekit TrackSource proto enum values)
 _TRACK_SOURCE_NAMES = {
@@ -85,13 +119,16 @@ def attach_session_event_loggers(session: AgentSession) -> None:
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(ev):
-        role = getattr(ev, "role", "<unknown>")
-        text = getattr(ev, "text", "") or getattr(ev, "message", "")
-        logger.info(
-            "[SESSION-EVENT] conversation_item_added — role=%s text=%r",
-            role,
-            text,
-        )
+        # ev.item is ChatMessage | AgentHandoff | _TypeDiscriminator.
+        # ChatMessage carries role + content; only it has spoken/text content.
+        item = getattr(ev, "item", None)
+        role = getattr(item, "role", None)
+        if role is None:
+            # AgentHandoff or unknown discriminator — log its type instead.
+            role = getattr(item, "type", "<unknown>")
+        text = _extract_text(item)
+        logger.info("[TRANSCRIPT] [%s] %s", role, text)
+        _append_transcript(role, text)
 
     @session.on("metrics_collected")
     def on_metrics_collected(ev):

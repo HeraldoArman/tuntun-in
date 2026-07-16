@@ -79,4 +79,8 @@ def log_startup_env() -> None:
         "CONVEX_SERVICE_SECRET: %s",
         "set" if os.environ.get("CONVEX_SERVICE_SECRET") else "<not set>",
     )
+    logger.info(
+        "TRANSCRIPT_FILE: %s",
+        os.environ.get("TUNTUN_TRANSCRIPT_FILE", "logs/transcript.log"),
+    )
     logger.info("=" * 60)
