@@ -68,6 +68,19 @@ import { Button } from "@tuntun-in/ui/components/button";
 
 If you want to add app-specific blocks instead of shared primitives, run the shadcn CLI from `apps/web`.
 
+## Deployment
+
+### Docker Compose
+
+- Target: web
+- Config: `docker-compose.yml` (app Dockerfiles live in `apps/*/Dockerfile`)
+- Build images: pnpm run docker:build
+- Start: pnpm run docker:up
+- Logs: pnpm run docker:logs
+- Stop: pnpm run docker:down
+
+Environment variables are read from each app's `.env` file (baked into web builds for public variables) and overridden in `docker-compose.yml` for container networking.
+
 ## Project Structure
 
 ```
@@ -87,3 +100,7 @@ tuntun-in/
 - `pnpm run dev:setup`: Setup and configure your Convex project
 - `pnpm run check-types`: Check TypeScript types across all apps
 - `cd apps/web && pnpm run generate-pwa-assets`: Generate PWA assets
+- `pnpm run docker:build`: Build the Docker Compose images
+- `pnpm run docker:up`: Build and start the Docker Compose stack
+- `pnpm run docker:logs`: Tail logs from the Docker Compose stack
+- `pnpm run docker:down`: Stop the Docker Compose stack
