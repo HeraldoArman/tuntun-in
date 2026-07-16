@@ -1,0 +1,46 @@
+{
+  "name": "agent",
+  "root": "apps/agent",
+  "sourceRoot": "apps/agent/src",
+  "projectType": "application",
+  "targets": {
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run python src/agent.py dev",
+        "cwd": "apps/agent"
+      }
+    },
+    "start": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run python src/agent.py start",
+        "cwd": "apps/agent"
+      }
+    },
+    "console": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run python src/agent.py console",
+        "cwd": "apps/agent"
+      }
+    },
+    "check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run ruff check .",
+        "cwd": "apps/agent"
+      }
+    },
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run ruff format .",
+        "cwd": "apps/agent"
+      }
+    },
+    "build": {
+      "executor": "nx:noop"
+    }
+  }
+}
