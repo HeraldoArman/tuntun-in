@@ -15,9 +15,21 @@ import {
   VideoTrack,
 } from "@livekit/components-react";
 import { Button } from "@tuntun-in/ui/components/button";
+import { cn } from "@tuntun-in/ui/lib/utils";
 import type { VideoCaptureOptions } from "livekit-client";
 import { RoomEvent, Track } from "livekit-client";
-import { Mic, MicOff, PhoneOff, Video, VideoOff } from "lucide-react";
+import {
+  ArrowLeft,
+  Camera,
+  MapPin,
+  Mic,
+  MicOff,
+  PhoneOff,
+  ScanEye,
+  Video,
+  VideoOff,
+} from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -382,7 +394,15 @@ function LocalCameraPreview() {
   const { buttonProps: camButtonProps } = useTrackToggle({
     source: Track.Source.Camera,
   });
-  const { buttonProps: disconnectButtonProps } = useDisconnectButton({});
+  // useDisconnectButton ships its own className; pull it out of the spread
+  // and merge with our control-dock styling instead of overwriting.
+  const { buttonProps: disconnectButtonPropsRaw } = useDisconnectButton({});
+  const { className: disconnectButtonClassName, ...disconnectButtonProps } =
+    disconnectButtonPropsRaw;
+  const disconnectClassName = cn(
+    disconnectButtonClassName,
+    "size-12 rounded-full [&_svg]:size-5"
+  );
 
   const camPub = localParticipant?.getTrackPublication(Track.Source.Camera);
 
@@ -400,7 +420,7 @@ function LocalCameraPreview() {
   }, [isMicrophoneEnabled, isCameraEnabled, camPub]);
 
   return (
-    <div className="relative h-full w-full bg-black">
+    <div className="relative h-full w-full overflow-hidden bg-black">
       {isCameraEnabled && camPub ? (
         <VideoTrack
           className="pointer-events-none h-full w-full object-cover"
@@ -412,53 +432,66 @@ function LocalCameraPreview() {
           }}
         />
       ) : (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="flex h-24 w-24 items-center justify-center rounded-full bg-muted">
-            <VideoOff className="h-10 w-10 text-muted-foreground" />
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4">
+          <div className="flex size-20 items-center justify-center rounded-full border border-white/10 bg-white/5 backdrop-blur-sm">
+            <VideoOff className="size-9 text-white/60" />
           </div>
+          <p className="text-sm text-white/60">Camera is off</p>
         </div>
       )}
 
-      <div className="absolute right-0 bottom-8 left-0 z-10 flex items-center justify-center gap-4">
-        <Button
-          aria-label={
-            isMicrophoneEnabled ? "Turn microphone off" : "Turn microphone on"
-          }
-          size="icon"
-          type="button"
-          variant={isMicrophoneEnabled ? "default" : "destructive"}
-          {...micButtonProps}
-        >
-          {isMicrophoneEnabled ? (
-            <Mic className="h-5 w-5" />
-          ) : (
-            <MicOff className="h-5 w-5" />
-          )}
-        </Button>
+      {/* Top status bar — live indicator + rear-camera badge */}
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-3 bg-gradient-to-b from-black/60 to-transparent p-4 pt-5">
+        <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 backdrop-blur-md">
+          <span className="relative flex size-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="font-medium text-sm text-white">Reflex active</span>
+        </div>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 font-medium text-white/80 text-xs backdrop-blur-md">
+          <Camera className="size-3.5" />
+          Rear camera
+        </span>
+      </div>
 
-        <Button
-          aria-label={isCameraEnabled ? "Turn camera off" : "Turn camera on"}
-          size="icon"
-          type="button"
-          variant={isCameraEnabled ? "default" : "destructive"}
-          {...camButtonProps}
-        >
-          {isCameraEnabled ? (
-            <Video className="h-5 w-5" />
-          ) : (
-            <VideoOff className="h-5 w-5" />
-          )}
-        </Button>
+      {/* Bottom control dock — frosted, larger touch targets */}
+      <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/70 to-transparent p-6 pt-20">
+        <div className="mx-auto flex w-fit items-center gap-2 rounded-2xl border border-white/10 bg-black/40 p-2 shadow-lg backdrop-blur-md">
+          <Button
+            aria-label={
+              isMicrophoneEnabled ? "Turn microphone off" : "Turn microphone on"
+            }
+            className="size-12 rounded-xl [&_svg]:size-5"
+            type="button"
+            variant={isMicrophoneEnabled ? "default" : "destructive"}
+            {...micButtonProps}
+          >
+            {isMicrophoneEnabled ? <Mic /> : <MicOff />}
+          </Button>
 
-        <Button
-          aria-label="End reflex session"
-          size="icon"
-          type="button"
-          variant="destructive"
-          {...disconnectButtonProps}
-        >
-          <PhoneOff className="h-5 w-5" />
-        </Button>
+          <Button
+            aria-label={isCameraEnabled ? "Turn camera off" : "Turn camera on"}
+            className="size-12 rounded-xl [&_svg]:size-5"
+            type="button"
+            variant={isCameraEnabled ? "default" : "destructive"}
+            {...camButtonProps}
+          >
+            {isCameraEnabled ? <Video /> : <VideoOff />}
+          </Button>
+
+          <div className="mx-1 h-8 w-px bg-white/10" />
+
+          <Button
+            aria-label="End reflex session"
+            className={disconnectClassName}
+            type="button"
+            variant="destructive"
+            {...disconnectButtonProps}
+          >
+            <PhoneOff />
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -518,31 +551,82 @@ export function ReflexCall() {
 
   if (!tokenResponse) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
+        {/* Background — subtle radial, matches landing hero */}
+        <div
+          aria-hidden
+          className="absolute inset-0 -z-10 [background:radial-gradient(125%_125%_at_50%_100%,transparent_0%,var(--color-background)_75%)]"
+        />
+        <div
+          aria-hidden
+          className="absolute inset-0 -z-20 hidden opacity-60 lg:block"
+        >
+          <div className="absolute top-0 left-0 h-[320rem] w-[140rem] -translate-y-[87.5%] -rotate-45 rounded-full bg-[radial-gradient(68.54%_68.72%_at_55.02%_31.46%,hsla(260,80%,85%,0.08)_0,hsla(260,40%,55%,0.02)_50%,transparent_80%)]" />
+        </div>
+
         <div className="w-full max-w-md">
-          <h1 className="mb-6 text-center font-semibold text-2xl">
-            Reflex AI Session
-          </h1>
-          <PreJoin
-            defaults={{ videoEnabled: true, audioEnabled: true }}
-            joinLabel="Start Reflex Session"
-            onError={(err) => {
-              const name = err?.name ?? "Error";
-              const message = err?.message ?? String(err);
-              logError("PreJoin error:", err);
-              logError(
-                "PreJoin error detail — name:",
-                name,
-                "message:",
-                message,
-                "\nLikely causes:",
-                "\n  1) Browser denied camera/mic permission (check site permissions)",
-                "\n  2) Page not in a secure context (HTTPS or localhost) — getUserMedia is blocked on plain HTTP LAN IPs",
-                "\n  3) No camera/mic device available"
-              );
-            }}
-            onSubmit={handlePreJoinSubmit}
-          />
+          <Link
+            className="mb-6 inline-flex items-center gap-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground"
+            href="/dashboard/reflex"
+          >
+            <ArrowLeft className="size-4" />
+            Back to Reflex
+          </Link>
+
+          {/* Brand header */}
+          <div className="mb-7 flex flex-col items-center text-center">
+            <div className="flex size-14 items-center justify-center rounded-2xl border bg-muted shadow-sm">
+              <ScanEye className="size-7 text-primary" />
+            </div>
+            <h1 className="mt-5 font-semibold text-2xl tracking-tight">
+              Reflex AI Session
+            </h1>
+            <p className="mt-2 max-w-xs text-balance text-muted-foreground text-sm">
+              Real-time vision-to-audio obstacle detection. Tutu watches your
+              camera and warns you about hazards instantly.
+            </p>
+          </div>
+
+          {/* PreJoin panel */}
+          <div className="overflow-hidden rounded-2xl border bg-card shadow-lg ring-1 ring-background">
+            <PreJoin
+              defaults={{ videoEnabled: true, audioEnabled: true }}
+              joinLabel="Start Reflex Session"
+              onError={(err) => {
+                const name = err?.name ?? "Error";
+                const message = err?.message ?? String(err);
+                logError("PreJoin error:", err);
+                logError(
+                  "PreJoin error detail — name:",
+                  name,
+                  "message:",
+                  message,
+                  "\nLikely causes:",
+                  "\n  1) Browser denied camera/mic permission (check site permissions)",
+                  "\n  2) Page not in a secure context (HTTPS or localhost) — getUserMedia is blocked on plain HTTP LAN IPs",
+                  "\n  3) No camera/mic device available"
+                );
+              }}
+              onSubmit={handlePreJoinSubmit}
+            />
+          </div>
+
+          {/* What to expect */}
+          <ul className="mt-6 flex flex-col gap-2.5">
+            {[
+              { icon: Camera, text: "Uses your back camera by default" },
+              { icon: Mic, text: "Microphone listens for voice commands" },
+              { icon: MapPin, text: "Shares live location for navigation" },
+            ].map(({ icon: Icon, text }) => (
+              <li
+                className="flex items-center gap-3 rounded-lg border bg-card/60 px-3 py-2.5 text-muted-foreground text-sm"
+                key={text}
+              >
+                <Icon className="size-4 shrink-0 text-primary" />
+                <span>{text}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
     );
