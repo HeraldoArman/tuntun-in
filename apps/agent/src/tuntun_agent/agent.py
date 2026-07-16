@@ -167,9 +167,23 @@ class TuntunAgent(Agent):
                 (e.g. "the train station", "nearest market", "Jl. Sudirman 10").
         """
         api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+        # Log on ENTRY — decisive signal that the model actually invoked the
+        # tool (vs. just speaking "not configured" without calling). Also
+        # surfaces key state + pid so a missing key in the serving process
+        # (e.g. a Railway deploy that lacks the var) is obvious.
+        logger.info(
+            "TOOL navigate_to ENTER — destination=%r GOOGLE_MAPS_API_KEY_len=%d "
+            "(%s) pid=%d",
+            destination,
+            len(api_key),
+            "present" if api_key else "MISSING",
+            os.getpid(),
+        )
         if not api_key:
-            logger.warning(
-                "navigate_to: GOOGLE_MAPS_API_KEY not set — cannot fetch routes"
+            logger.error(
+                "navigate_to: GOOGLE_MAPS_API_KEY empty in this process env — "
+                "returning 'not configured'. Check the agent process loaded "
+                "apps/agent/.env; if deployed, set the var in the deploy env."
             )
             return (
                 "I can't fetch maps right now — navigation is not configured. "
@@ -180,7 +194,11 @@ class TuntunAgent(Agent):
         lat = userdata.get("lat") if isinstance(userdata, dict) else None
         lng = userdata.get("lng") if isinstance(userdata, dict) else None
         if lat is None or lng is None:
-            logger.info("navigate_to: no GPS origin yet — destination=%r", destination)
+            logger.info(
+                "navigate_to: no GPS origin yet — destination=%r (GPS not "
+                "published on the data channel)",
+                destination,
+            )
             return (
                 "I need your location to route you. Please allow location "
                 "access in the browser so I can guide you."
@@ -226,7 +244,7 @@ class TuntunAgent(Agent):
                 "about to step into an excavation pit",
                 "oncoming motorcycle on collision course").
         """
-        logger.warning("trigger_overwatch called — reason=%r", reason)
+        logger.warning("TOOL trigger_overwatch ENTER — reason=%r pid=%d", reason, os.getpid())
         spawn_background_task(trigger_overwatch_flow(self.session, reason))
         return (
             "Stay calm. I'm alerting your guardian now so they can see your "
@@ -263,9 +281,10 @@ class TuntunAgent(Agent):
                 blue building"). If unknown, pass "unknown".
         """
         logger.info(
-            "report_road_hazard called — description=%r location=%r",
+            "TOOL report_road_hazard ENTER — description=%r location=%r pid=%d",
             description,
             location_description,
+            os.getpid(),
         )
         spawn_background_task(
             report_hazard_flow(self.session, description, location_description)
@@ -288,6 +307,11 @@ class TuntunAgent(Agent):
             destination: The place the user wants to reach, as free text
                 (e.g. "the train station", "Jl. Sudirman 10").
         """
+        logger.info(
+            "TOOL reroute_around_hazards CALLED — destination=%r pid=%d",
+            destination,
+            os.getpid(),
+        )
         userdata = self.session.userdata
         lat = userdata.get("lat") if isinstance(userdata, dict) else None
         lng = userdata.get("lng") if isinstance(userdata, dict) else None
@@ -303,11 +327,12 @@ class TuntunAgent(Agent):
 
         origin = (float(lat), float(lng))
         logger.info(
-            "reroute_around_hazards: dispatching reasoning task — destination=%r "
-            "origin=(%.6f, %.6f)",
+            "TOOL reroute_around_hazards ENTER — destination=%r "
+            "origin=(%.6f, %.6f) pid=%d",
             destination,
             origin[0],
             origin[1],
+            os.getpid(),
         )
         spawn_background_task(compute_detour(self.session, origin, destination))
         return (

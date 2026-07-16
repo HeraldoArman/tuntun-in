@@ -34,7 +34,10 @@ import time
 
 from dotenv import load_dotenv
 
-load_dotenv()  # must run before tuntun_agent imports (LOG_LEVEL read at import)
+# override=True so a stale/empty shell export can't shadow the .env values
+# (e.g. an exported GOOGLE_MAPS_API_KEY="" in a parent shell would otherwise
+# leave the Deep Navigator without a Maps key even though .env defines it).
+load_dotenv(override=True)  # must run before tuntun_agent imports (LOG_LEVEL read at import)
 
 from livekit.agents import (  # noqa: E402
     AgentServer,

@@ -328,6 +328,17 @@ function GpsPublisher() {
         );
         return;
       }
+      // Drop the fix if the room isn't connected yet — publishing now would
+      // throw NegotiationError on a closed engine. watchPosition will fire
+      // again after connect, so we just skip this one.
+      if (!room.isConnected()) {
+        log(
+          "GpsPublisher — room not connected yet (state:",
+          room.state,
+          "), skipping gps fix"
+        );
+        return;
+      }
       lastPublished = now;
       // publishData expects a Uint8Array (NonSharedUint8Array). Passing a
       // string silently produces empty bytes on the receiver (protobuf-es
@@ -421,6 +432,18 @@ function ProfilePublisher() {
     );
 
     const publish = () => {
+      // Don't publish before the room's RTC engine is connected — doing so
+      // throws NegotiationError ("cannot negotiate on closed engine") when the
+      // effect runs during the connecting phase (or after an HMR remount on a
+      // closed engine). Defer to RoomEvent.Connected below.
+      if (!room.isConnected()) {
+        log(
+          "ProfilePublisher — room not connected yet (state:",
+          room.state,
+          "), deferring profileId publish until Connected"
+        );
+        return;
+      }
       localParticipant
         .publishData(payload, { reliable: true, topic: PROFILE_TOPIC })
         .then(() =>
@@ -438,15 +461,23 @@ function ProfilePublisher() {
 
     publish();
 
+    // Publish once the room finishes connecting (covers the case where the
+    // effect ran during the connecting phase above).
+    const onConnected = () => {
+      log("ProfilePublisher — room Connected, publishing profileId");
+      publish();
+    };
     // Re-publish when a new participant joins so a late-arriving agent still
     // gets the profile id.
     const onParticipantConnected = () => {
       log("ProfilePublisher — participant connected, re-publishing profileId");
       publish();
     };
+    room.on(RoomEvent.Connected, onConnected);
     room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
 
     return () => {
+      room.off(RoomEvent.Connected, onConnected);
       room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
     };
   }, [room, localParticipant, profile]);

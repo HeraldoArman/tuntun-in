@@ -161,25 +161,41 @@ async def _resolve_destination(
     """
     lowered = destination.lower().strip()
     is_nearest = any(word in lowered for word in _NEAREST_WORDS)
+    logger.info(
+        "Navigator resolve: destination=%r is_nearest=%s",
+        destination,
+        is_nearest,
+    )
 
     if is_nearest:
         place_term = _NEAREST_RE.sub("", destination).strip() or destination
+        logger.info("Navigator resolve: nearest intent -> Places search %r", place_term)
         hit = await _places_text_search(api_key, place_term, origin)
         if hit is not None:
+            logger.info(
+                "Navigator resolve: Places hit -> %r (%.6f, %.6f)",
+                hit[2],
+                hit[0],
+                hit[1],
+            )
             return (hit[0], hit[1]), hit[2]
         # Fall through to geocode in case "nearest" was literal-ish.
+        logger.info("Navigator resolve: Places missed, falling back to geocode")
         coords = await _geocode(api_key, destination)
         if coords is not None:
             return coords, destination
+        logger.warning("Navigator resolve: neither Places nor geocode resolved %r", destination)
         return None
 
     coords = await _geocode(api_key, destination)
     if coords is not None:
         return coords, destination
     # Geocode missed — try a nearby Places search (chain/shop names).
+    logger.info("Navigator resolve: geocode missed -> Places fallback for %r", destination)
     hit = await _places_text_search(api_key, destination, origin)
     if hit is not None:
         return (hit[0], hit[1]), hit[2]
+    logger.warning("Navigator resolve: geocode + Places both missed for %r", destination)
     return None
 
 
@@ -248,7 +264,14 @@ async def fetch_route_and_reply(
     landmark-grounded guidance reply via generate_reply. Mirrors the design-doc
     async-tool pattern (return fast, speak result later) to avoid dead-air."""
     t0 = time.monotonic()
-    logger.info("Deep Navigator fetch start: destination=%r", destination)
+    logger.info(
+        "Deep Navigator fetch start: destination=%r origin=(%.6f, %.6f) "
+        "api_key_len=%d",
+        destination,
+        origin[0],
+        origin[1],
+        len(api_key),
+    )
 
     resolved = await _resolve_destination(api_key, origin, destination)
     if resolved is None:

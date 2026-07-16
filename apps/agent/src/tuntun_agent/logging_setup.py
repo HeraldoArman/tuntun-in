@@ -61,6 +61,20 @@ def log_startup_env() -> None:
         "GOOGLE_API_KEY: %s",
         "set" if os.environ.get("GOOGLE_API_KEY") else "<not set>",
     )
+    # Deep Navigator needs this DISTINCT from GOOGLE_API_KEY (the Gemini key).
+    # A Maps key with the Gemini-only key's APIs enabled returns
+    # REQUEST_DENIED from geocode/directions. Log presence + length so a
+    # missing/empty key is obvious at startup.
+    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+    logger.info(
+        "GOOGLE_MAPS_API_KEY: %s (len=%d) — used by Deep Navigator",
+        "set" if maps_key else "<not set>",
+        len(maps_key),
+    )
+    logger.info(
+        "HAZARD_MODEL: %s",
+        os.environ.get("HAZARD_MODEL", "gemini-3.1-flash-lite (default)"),
+    )
     logger.info(
         "CONVEX_SERVICE_SECRET: %s",
         "set" if os.environ.get("CONVEX_SERVICE_SECRET") else "<not set>",
