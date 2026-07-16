@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader } from "@tuntun-in/ui/components/card";
 import { Construction, EyeOff, MapPin, Navigation, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
+import { Mascot } from "@/modules/landing/mascot";
 
 const problems = [
   {
@@ -49,8 +50,13 @@ const CardDecorator = ({ children }: { children: ReactNode }) => (
 
 export function Problem() {
   return (
-    <section className="bg-muted/30 py-16 md:py-32">
-      <div className="mx-auto max-w-5xl px-6">
+    <section className="relative overflow-hidden bg-muted/30 py-16 md:py-32">
+      {/* Decorative mascot — peeking from the top-right corner */}
+      <Mascot
+        className="absolute top-8 right-4 z-0 hidden h-40 w-40 rotate-6 drop-shadow-2xl sm:right-10 md:block lg:h-56 lg:w-56"
+        name="robot_11"
+      />
+      <div className="relative z-10 mx-auto max-w-5xl px-6">
         <div className="text-center">
           <h2
             className="text-balance font-semibold text-4xl lg:text-5xl"

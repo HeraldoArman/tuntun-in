@@ -5,6 +5,7 @@ import { ArrowRight, ChevronRight } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import Link from "next/link";
 import { siConvex, siGooglegemini, siLivekit, siNextdotjs } from "simple-icons";
+import { Mascot } from "@/modules/landing/mascot";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -41,7 +42,18 @@ export function Hero() {
         <div className="absolute top-0 left-0 h-[320rem] w-[140rem] -translate-y-[87.5%] -rotate-45 rounded-full bg-[radial-gradient(68.54%_68.72%_at_55.02%_31.46%,hsla(260,80%,85%,0.08)_0,hsla(260,40%,55%,0.02)_50%,transparent_80%)]" />
       </div>
 
-      <div className="mx-auto max-w-7xl px-6 pt-24 md:pt-36">
+      {/* Decorative mascot — top-left, peeks behind the hero copy on wide screens */}
+      <Mascot
+        className="absolute top-24 left-4 z-0 hidden h-48 w-48 -rotate-12 drop-shadow-2xl md:left-10 lg:block lg:h-72 lg:w-72"
+        name="robot_07"
+      />
+      {/* Decorative mascot — bottom-right, anchors near the mockup */}
+      <Mascot
+        className="absolute top-1/2 right-4 z-0 hidden h-40 w-40 translate-y-8 rotate-12 drop-shadow-2xl md:right-10 lg:block lg:h-64 lg:w-64"
+        name="robot_03"
+      />
+
+      <div className="relative z-10 mx-auto max-w-7xl px-6 pt-24 md:pt-36">
         <div className="text-center sm:mx-auto lg:mt-0 lg:mr-auto">
           <motion.div
             animate="visible"
@@ -139,7 +151,7 @@ export function Hero() {
       </div>
 
       {/* Logo cloud / trust strip */}
-      <div className="bg-background pt-16 pb-16 md:pb-32">
+      <div className="relative z-10 bg-background pt-16 pb-16 md:pb-32">
         <div className="mx-auto max-w-5xl px-6">
           <p className="mb-8 text-center font-medium text-muted-foreground text-sm">
             Built with industry-leading technology

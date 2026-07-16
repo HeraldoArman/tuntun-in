@@ -2,6 +2,7 @@ import { Badge } from "@tuntun-in/ui/components/badge";
 import { Card, CardContent, CardHeader } from "@tuntun-in/ui/components/card";
 import { Brain, Zap } from "lucide-react";
 import type { ReactNode } from "react";
+import { Mascot } from "@/modules/landing/mascot";
 
 const CardDecorator = ({ children }: { children: ReactNode }) => (
   <div className="mask-radial-from-40% mask-radial-to-60% relative mx-auto size-36 duration-200 [--color-border:color-mix(in_oklab,var(--color-zinc-950)_10%,transparent)] group-hover:[--color-border:color-mix(in_oklab,var(--color-zinc-950)_20%,transparent)] dark:[--color-border:color-mix(in_oklab,var(--color-white)_15%,transparent)] dark:group-hover:[--color-border:color-mix(in_oklab,var(--color-white)_20%,transparent)]">
@@ -19,10 +20,15 @@ export function Architecture() {
   return (
     <section
       aria-labelledby="architecture-heading"
-      className="py-16 md:py-32"
+      className="relative overflow-hidden py-16 md:py-32"
       id="how-it-works"
     >
-      <div className="@container mx-auto max-w-5xl px-6">
+      {/* Decorative mascot — sitting bottom-left, "watching" the architecture */}
+      <Mascot
+        className="absolute bottom-8 left-4 z-0 hidden h-40 w-40 -rotate-6 drop-shadow-2xl sm:left-10 md:block lg:h-64 lg:w-64"
+        name="robot_14"
+      />
+      <div className="@container relative z-10 mx-auto max-w-5xl px-6">
         <div className="text-center">
           <h2
             className="text-balance font-semibold text-4xl lg:text-5xl"

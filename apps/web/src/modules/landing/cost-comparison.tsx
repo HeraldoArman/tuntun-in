@@ -1,6 +1,7 @@
 import { Button } from "@tuntun-in/ui/components/button";
 import { Cpu, Sparkles } from "lucide-react";
 import Link from "next/link";
+import { Mascot } from "@/modules/landing/mascot";
 
 const tableData = [
   {
@@ -37,8 +38,16 @@ const tableData = [
 
 export function CostComparison() {
   return (
-    <section aria-labelledby="cost-heading" className="py-16 md:py-32">
-      <div className="mx-auto max-w-5xl px-6">
+    <section
+      aria-labelledby="cost-heading"
+      className="relative overflow-hidden py-16 md:py-32"
+    >
+      {/* Decorative mascot — peeking from the bottom-left near the table */}
+      <Mascot
+        className="absolute bottom-16 left-4 z-0 hidden h-40 w-40 rotate-6 drop-shadow-2xl sm:left-10 md:block lg:h-64 lg:w-64"
+        name="robot_09"
+      />
+      <div className="relative z-10 mx-auto max-w-5xl px-6">
         <div className="mx-auto mb-12 max-w-3xl text-center">
           <h2
             className="text-balance font-semibold text-4xl lg:text-5xl"
