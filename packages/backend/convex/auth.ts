@@ -10,13 +10,19 @@ import authConfig from "./auth.config";
 const siteUrl = process.env.SITE_URL ?? "http://localhost:3001";
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+// Extra origins allowed to call auth (CSRF trustedOrigins). Comma-separated.
+// Needed so both the Railway URL and the custom domain can log in.
+const extraTrustedOrigins = (process.env.TRUSTED_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
 function createAuth(ctx: GenericCtx<DataModel>) {
   return betterAuth({
     baseURL: siteUrl,
-    trustedOrigins: [siteUrl],
+    trustedOrigins: [siteUrl, ...extraTrustedOrigins],
     database: authComponent.adapter(ctx),
     emailAndPassword: {
       enabled: true,
