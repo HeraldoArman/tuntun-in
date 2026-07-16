@@ -19,6 +19,10 @@ ENV NODE_ENV=production
 
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+# Next.js standalone tracing excludes /public (and /static) by design — the
+# standalone server.js only serves files from a sibling public/ directory, so
+# the logo, mascot, and favicon manifest icons 404/400 at runtime without this.
+COPY --from=builder /app/apps/web/public ./apps/web/public
 
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3001
