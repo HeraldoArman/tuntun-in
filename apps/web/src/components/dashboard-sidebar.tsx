@@ -18,6 +18,7 @@ import { useQuery } from "convex/react";
 import {
   EyeIcon,
   LayoutDashboardIcon,
+  ScanEyeIcon,
   SettingsIcon,
   ShieldIcon,
 } from "lucide-react";
@@ -50,6 +51,11 @@ const blindUserNavItems = [
     icon: LayoutDashboardIcon,
     label: "Dashboard",
     href: "/dashboard",
+  },
+  {
+    icon: ScanEyeIcon,
+    label: "Reflex AI",
+    href: "/dashboard/reflex",
   },
   {
     icon: EyeIcon,
