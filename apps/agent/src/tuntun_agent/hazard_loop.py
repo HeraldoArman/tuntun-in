@@ -36,8 +36,10 @@ logger = get_logger()
 
 # Sampling interval. Lower = faster warnings, higher Gemini cost.
 _SAMPLE_INTERVAL = 1.5
-# Fast non-realtime vision model for per-frame classification.
-_HAZARD_MODEL = "gemini-2.5-flash"
+# Fast non-realtime vision model for per-frame classification. gemini-2.5-flash
+# is gated ("no longer available to new users") on newer API keys; 3.1-flash-lite
+# is GA, cheap, and good enough for hazard classification. Override via env.
+_HAZARD_MODEL = os.environ.get("HAZARD_MODEL", "gemini-3.1-flash-lite")
 # Downscale frames before classification — keeps latency + cost low.
 _CLASSIFY_WIDTH = 640
 _CLASSIFY_HEIGHT = 640

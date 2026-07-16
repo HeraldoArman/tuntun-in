@@ -77,6 +77,112 @@ async def _geocode(api_key: str, address: str) -> tuple[float, float] | None:
         return None
 
 
+# Words that signal a "find me the closest X" intent. Geocoding these literally
+# ("nearest Indomaret") yields nothing — the user wants a Places search biased to
+# their origin, not a literal address match.
+_NEAREST_WORDS = ("nearest", "nearby", "closest", "nearest to me", "nearest me")
+_NEAREST_RE = re.compile(
+    r"\b(?:nearest|nearby|closest)\b(?:\s+(?:to\s+me|me))?", re.IGNORECASE
+)
+# Places text-search radius (meters) around the user's origin.
+_PLACES_RADIUS_M = 5000
+
+
+async def _places_text_search(
+    api_key: str, query: str, origin: tuple[float, float]
+) -> tuple[float, float, str] | None:
+    """Find the closest place matching a free-text query near the origin via
+    Google Places Text Search. Used for "nearest X" / chain-name queries
+    (e.g. "Indomaret", "Alfamart", "the market") that don't geocode as a
+    literal address. Returns (lat, lng, name) of the top (closest) result, or
+    None on failure/no results."""
+    url = f"{_MAPS_BASE}/place/textsearch/json"
+    params = {
+        "query": query,
+        "location": f"{origin[0]},{origin[1]}",
+        "radius": _PLACES_RADIUS_M,
+        "key": api_key,
+    }
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        results = data.get("results") or []
+        if not results:
+            logger.warning(
+                "Places text search no results: query=%r status=%s "
+                "elapsed=%.1fms",
+                query,
+                data.get("status"),
+                elapsed_ms,
+            )
+            return None
+        # Results are ordered by relevance + distance from `location`; the first
+        # is the closest match for "nearest X" intents.
+        top = results[0]
+        loc = top["geometry"]["location"]
+        lat, lng = float(loc["lat"]), float(loc["lng"])
+        name = str(top.get("name") or query)
+        address = top.get("formatted_address") or ""
+        logger.info(
+            "Places text search success: query=%r -> %r (%.6f, %.6f) "
+            "addr=%r elapsed=%.1fms",
+            query,
+            name,
+            lat,
+            lng,
+            address,
+            elapsed_ms,
+        )
+        return lat, lng, name
+    except Exception as exc:
+        logger.error(
+            "Places text search failed: query=%r error=%s", query, exc, exc_info=True
+        )
+        return None
+
+
+async def _resolve_destination(
+    api_key: str, origin: tuple[float, float], destination: str
+) -> tuple[tuple[float, float], str] | None:
+    """Resolve a free-text destination to ((lat, lng), display_name).
+
+    Strategy:
+      1. "nearest/nearby/closest X" intent -> Places text search biased to
+         origin (handles chain names like Indomaret that geocode poorly).
+      2. Otherwise geocode the literal address; if that yields nothing, fall
+         back to a Places text search near the origin (catches chain/shop
+         names the geocoder can't resolve as an address).
+
+    Returns None if nothing resolves.
+    """
+    lowered = destination.lower().strip()
+    is_nearest = any(word in lowered for word in _NEAREST_WORDS)
+
+    if is_nearest:
+        place_term = _NEAREST_RE.sub("", destination).strip() or destination
+        hit = await _places_text_search(api_key, place_term, origin)
+        if hit is not None:
+            return (hit[0], hit[1]), hit[2]
+        # Fall through to geocode in case "nearest" was literal-ish.
+        coords = await _geocode(api_key, destination)
+        if coords is not None:
+            return coords, destination
+        return None
+
+    coords = await _geocode(api_key, destination)
+    if coords is not None:
+        return coords, destination
+    # Geocode missed — try a nearby Places search (chain/shop names).
+    hit = await _places_text_search(api_key, destination, origin)
+    if hit is not None:
+        return (hit[0], hit[1]), hit[2]
+    return None
+
+
 async def _directions(
     api_key: str, origin: tuple[float, float], destination: tuple[float, float]
 ) -> list[dict[str, Any]] | None:
@@ -144,8 +250,8 @@ async def fetch_route_and_reply(
     t0 = time.monotonic()
     logger.info("Deep Navigator fetch start: destination=%r", destination)
 
-    dest_coords = await _geocode(api_key, destination)
-    if dest_coords is None:
+    resolved = await _resolve_destination(api_key, origin, destination)
+    if resolved is None:
         await session.generate_reply(
             instructions=(
                 f"Tell the user briefly in English that you could not find a "
@@ -154,13 +260,14 @@ async def fetch_route_and_reply(
             )
         )
         return
+    dest_coords, dest_name = resolved
 
     steps = await _directions(api_key, origin, dest_coords)
     if not steps:
         await session.generate_reply(
             instructions=(
                 f"Tell the user briefly in English that you could not compute "
-                f"a walking route to '{destination}' right now. One short "
+                f"a walking route to '{dest_name}' right now. One short "
                 f"sentence, calm tone."
             )
         )
@@ -177,7 +284,8 @@ async def fetch_route_and_reply(
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     logger.info(
-        "Deep Navigator route ready: elapsed=%.1fms first=%r",
+        "Deep Navigator route ready: dest=%r elapsed=%.1fms first=%r",
+        dest_name,
         elapsed_ms,
         first["instruction"],
     )
@@ -186,7 +294,7 @@ async def fetch_route_and_reply(
         instructions=(
             "You are guiding a visually impaired user and you can see their "
             "live chest-mounted camera feed. A walking route was just fetched. "
-            f"Route to '{destination}':\n{steps_block}\n\n"
+            f"Route to '{dest_name}':\n{steps_block}\n\n"
             "Translate the FIRST maneuver into tangible, landmark-based "
             "guidance: anchor the turn/direction to something visible in the "
             "camera right now (a food cart, pole, sign, building color, "

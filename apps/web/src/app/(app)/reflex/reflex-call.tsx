@@ -329,7 +329,13 @@ function GpsPublisher() {
         return;
       }
       lastPublished = now;
-      const payload = JSON.stringify({ type: "gps", lat, lng });
+      // publishData expects a Uint8Array (NonSharedUint8Array). Passing a
+      // string silently produces empty bytes on the receiver (protobuf-es
+      // bytes field coerces a string to nothing), so the agent's data handler
+      // gets an empty payload and never stores the GPS fix. Encode UTF-8.
+      const payload = new TextEncoder().encode(
+        JSON.stringify({ type: "gps", lat, lng })
+      );
       localParticipant
         .publishData(payload, { reliable: true, topic: GPS_TOPIC })
         .then(() =>
@@ -408,7 +414,11 @@ function ProfilePublisher() {
       return;
     }
     const profileId = profile._id;
-    const payload = JSON.stringify({ type: "profile", profileId });
+    // Encode as Uint8Array — see GpsPublisher note. A string payload arrives
+    // empty on the receiver, so the agent would never see the profileId.
+    const payload = new TextEncoder().encode(
+      JSON.stringify({ type: "profile", profileId })
+    );
 
     const publish = () => {
       localParticipant
@@ -440,6 +450,212 @@ function ProfilePublisher() {
       room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
     };
   }, [room, localParticipant, profile]);
+
+  return null;
+}
+
+/**
+ * Plays a soft, comforting "thinking" sound while the agent is working — so a
+ * blind user knows the agent heard them and is processing (not frozen/silent).
+ *
+ * Detection (no AgentState event exists on the client, so we infer from media):
+ *  - Local user's transcription turns final  -> user finished speaking -> the
+ *    agent is now "thinking" -> start the gentle tone loop.
+ *  - Agent transcription received, or agent becomes an active speaker -> agent
+ *    is responding -> stop the tone.
+ *  - Safety auto-stop after `MAX Thinking` seconds with no agent reply, so a
+ *    missed event never leaves the tone looping forever.
+ *
+ * The sound: a slow, soft two-note sine pulse (consonant major-third interval),
+ * low gain, smooth attack/release. No sharp transients — calming, not alarming.
+ * Headless — renders nothing.
+ */
+const THINKING_INTERVAL_MS = 1000;
+const THINKING_MAX_MS = 12_000;
+// Soft consonant interval (C5 / E5) — calm, pleasant.
+const THINKING_FREQS = [523.25, 659.25];
+const THINKING_PEAK_GAIN = 0.08;
+
+// Module-level shared AudioContext for the thinking tone. Browsers suspend an
+// AudioContext created outside a user gesture, and resume() must be called
+// while a gesture is "active" (transient activation). Calling resume() from a
+// TranscriptionReceived event — which is NOT a user gesture — leaves the
+// context suspended and the beeps silent. So we warm the context on the first
+// pointer/key gesture at module load. This module loads before PreJoin
+// renders, so the "Start Reflex Session" click (a real gesture) triggers the
+// warmer and the context is already running by the time the first beep fires.
+let sharedAudioCtx: AudioContext | null = null;
+let audioWarmerInstalled = false;
+
+function createAudioContext(): AudioContext | null {
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  return Ctor ? new Ctor() : null;
+}
+
+function warmAudioOnGesture() {
+  if (sharedAudioCtx) {
+    return;
+  }
+  const ctx = createAudioContext();
+  if (!ctx) {
+    return;
+  }
+  sharedAudioCtx = ctx;
+  if (ctx.state === "suspended") {
+    ctx
+      .resume()
+      .then(() => log("[tuntun:thinking] audio warmed — state:", ctx.state))
+      .catch((err: unknown) =>
+        logError("[tuntun:thinking] warm resume failed:", err)
+      );
+  }
+  window.removeEventListener("pointerdown", warmAudioOnGesture);
+  window.removeEventListener("keydown", warmAudioOnGesture);
+}
+
+if (typeof window !== "undefined" && !audioWarmerInstalled) {
+  audioWarmerInstalled = true;
+  window.addEventListener("pointerdown", warmAudioOnGesture);
+  window.addEventListener("keydown", warmAudioOnGesture);
+}
+
+// Returns the shared AudioContext, attempting to resume it if suspended. Best
+// effort — if the warmer never fired (no gesture yet) the context may stay
+// suspended and the first beep is silent; subsequent beeps work once any
+// gesture resumes it.
+function getThinkingAudioContext(): AudioContext | null {
+  if (!sharedAudioCtx) {
+    sharedAudioCtx = createAudioContext();
+  }
+  const ctx = sharedAudioCtx;
+  if (ctx && ctx.state === "suspended") {
+    ctx
+      .resume()
+      .catch((err: unknown) =>
+        logError("[tuntun:thinking] resume failed:", err)
+      );
+  }
+  return ctx;
+}
+
+function ThinkingIndicator() {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const thinkingRef = useRef(false);
+  const beepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noteIndexRef = useRef(0);
+
+  useEffect(() => {
+    const playBeep = (ctx: AudioContext, freq: number) => {
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      // Sine = softest waveform; smooth envelope = no clicks.
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(THINKING_PEAK_GAIN, now + 0.12);
+      gain.gain.linearRampToValueAtTime(THINKING_PEAK_GAIN, now + 0.35);
+      gain.gain.linearRampToValueAtTime(0, now + 0.7);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.72);
+    };
+
+    const stopThinking = () => {
+      thinkingRef.current = false;
+      if (beepTimerRef.current !== null) {
+        clearInterval(beepTimerRef.current);
+        beepTimerRef.current = null;
+      }
+      if (stopTimerRef.current !== null) {
+        clearTimeout(stopTimerRef.current);
+        stopTimerRef.current = null;
+      }
+    };
+
+    // Pick the next soft note, cycling through the consonant interval.
+    const noteFreq = (i: number) =>
+      THINKING_FREQS[i % THINKING_FREQS.length] ?? THINKING_FREQS[0] ?? 523.25;
+
+    const startThinking = () => {
+      if (thinkingRef.current) {
+        // Already thinking — refresh the safety auto-stop window.
+        if (stopTimerRef.current !== null) {
+          clearTimeout(stopTimerRef.current);
+        }
+        stopTimerRef.current = setTimeout(stopThinking, THINKING_MAX_MS);
+        return;
+      }
+      const ctx = getThinkingAudioContext();
+      if (!ctx) {
+        logError("ThinkingIndicator — no AudioContext, beeps disabled");
+        return;
+      }
+      if (ctx.state !== "running") {
+        log(
+          "ThinkingIndicator — audio not running yet (state:",
+          ctx.state,
+          ") — tap the screen once to enable the thinking sound"
+        );
+      }
+      thinkingRef.current = true;
+      // One soft beep immediately, then on a slow comforting cadence.
+      playBeep(ctx, noteFreq(noteIndexRef.current));
+      noteIndexRef.current += 1;
+      beepTimerRef.current = setInterval(() => {
+        if (!thinkingRef.current) {
+          return;
+        }
+        const tickCtx = getThinkingAudioContext();
+        if (tickCtx) {
+          playBeep(tickCtx, noteFreq(noteIndexRef.current));
+        }
+        noteIndexRef.current += 1;
+      }, THINKING_INTERVAL_MS);
+      stopTimerRef.current = setTimeout(stopThinking, THINKING_MAX_MS);
+      log("ThinkingIndicator — agent thinking, soft tone started");
+    };
+
+    const localIdentity = localParticipant?.identity;
+    const isAgent = (identity?: string) => identity?.startsWith("agent");
+
+    const onTranscriptionReceived = (
+      segments: unknown,
+      participant: unknown
+    ) => {
+      const p = participant as { identity?: string };
+      const segs = segments as Array<{ final?: boolean }>;
+      if (p?.identity === localIdentity && segs?.some((s) => s.final)) {
+        startThinking();
+      } else if (isAgent(p?.identity)) {
+        if (thinkingRef.current) {
+          log("ThinkingIndicator — agent replying, tone stopped");
+        }
+        stopThinking();
+      }
+    };
+
+    const onActiveSpeakersChanged = (speakers: unknown) => {
+      const list = speakers as Array<{ identity?: string }>;
+      if (list.some((s) => isAgent(s.identity))) {
+        stopThinking();
+      }
+    };
+
+    room.on(RoomEvent.TranscriptionReceived, onTranscriptionReceived);
+    room.on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+
+    return () => {
+      room.off(RoomEvent.TranscriptionReceived, onTranscriptionReceived);
+      room.off(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+      stopThinking();
+    };
+  }, [room, localParticipant]);
 
   return null;
 }
@@ -779,6 +995,7 @@ export function ReflexCall() {
         <RoomEventLogger />
         <GpsPublisher />
         <ProfilePublisher />
+        <ThinkingIndicator />
         <LocalCameraPreview />
         <RoomAudioRenderer />
       </LiveKitRoom>
