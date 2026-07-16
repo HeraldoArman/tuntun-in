@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 const landingMenuItems = [
   { name: "Features", href: "/#features" },
   { name: "How It Works", href: "/#how-it-works" },
+  { name: "Live Map", href: "/map" },
 ] as const;
 
 export default function Header() {

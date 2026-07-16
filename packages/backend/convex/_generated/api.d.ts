@@ -11,6 +11,7 @@
 import type * as agent from "../agent.js";
 import type * as auth from "../auth.js";
 import type * as guardianLinks from "../guardianLinks.js";
+import type * as hazard from "../hazard.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as overwatch from "../overwatch.js";
@@ -27,6 +28,7 @@ declare const fullApi: ApiFromModules<{
   agent: typeof agent;
   auth: typeof auth;
   guardianLinks: typeof guardianLinks;
+  hazard: typeof hazard;
   healthCheck: typeof healthCheck;
   http: typeof http;
   overwatch: typeof overwatch;

@@ -1,6 +1,13 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["ultracite/biome/core", "ultracite/biome/next"],
+  "files": {
+    "includes": [
+      // Vendored mapcn (MapLibre) component — third-party shadcn-registry code,
+      // not ours to hand-lint. Excluded like the vendored shadcn chart.tsx.
+      "!!apps/web/src/components/ui/map.tsx"
+    ]
+  },
   "overrides": [
     {
       "includes": ["packages/backend/convex/**/*.ts"],

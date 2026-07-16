@@ -1,0 +1,14 @@
+/* mapcn / MapLibre popup chrome — strip the default white bubble so the popup
+   content (image + card) renders edge-to-edge with our own styling. Plain CSS
+   (not @apply) so it is independent of the Tailwind v4 important-modifier
+   syntax. Loaded after maplibre-gl.css so it wins. */
+.maplibregl-popup-content {
+  padding: 0 !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.maplibregl-popup-tip {
+  display: none !important;
+}
