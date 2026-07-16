@@ -39,32 +39,28 @@ Built with Next.js + LiveKit + Gemini Live + Convex + Better-T-Auth.
 The agent is split into two layers, mirroring the human nervous system: a
 fast always-on reflex (spinal cord) and a slow on-demand reasoner (cortex).
 
-```
-┌────────────┐   video+audio   ┌──────────────────────────────────────┐
-│  Next.js    │ ─────────────▶ │  Python LiveKit Agent (apps/agent)    │
-│  client     │ ◀───────────── │                                       │
-│ (cam, mic,  │   spatial audio │  Reflex Layer (Gemini Live)           │
-│  GPS, data) │                 │   - wake-word gated conversation      │
-└────────────┘                 │   - navigate_to / trigger_overwatch / │
-                               │     report_road_hazard / reroute_...  │
-                               │                                       │
-                               │  Hazard Detection Loop (gemini-flash) │
-                               │   - samples chest frame every ~1.5s   │
-                               │   - classifies hazards → Priority Mgr │
-                               │                                       │
-                               │  Priority Manager (state machine)     │
-                               │   - IDLE / ACTIVE_CONVERSATION /      │
-                               │     SPEAKING                          │
-                               │   - 3-level CRITICAL/MODERATE/LOW     │
-                               │   - per-hazard cooldown               │
-                               │                                       │
-                               │  Reasoning Layer (LangChain+DeepAgents)│
-                               │   - reroute_around_hazards tool       │
-                               │   - queries crowdsourced hazard map   │
-                               └───────────────┬───────────────────────┘
-                                               │
-                              Google Maps ┄┄┄┄┄┤   Convex (hazards, overwatch,
-                                               │   profiles, guardian links)
+```mermaid
+flowchart LR
+    Client["<b>Next.js client</b><br/>(apps/web)<br/>cam, mic, GPS, data"]
+
+    subgraph Agent["Python LiveKit Agent (apps/agent)"]
+        direction TB
+        Reflex["<b>Reflex Layer</b> (Gemini Live)<br/>• wake-word gated conversation<br/>• navigate_to / trigger_overwatch /<br/>  report_road_hazard / reroute_..."]
+        Hazard["<b>Hazard Detection Loop</b> (gemini-flash)<br/>• samples chest frame every ~1.5s<br/>• classifies hazards → Priority Manager"]
+        Priority["<b>Priority Manager</b> (state machine)<br/>• IDLE / ACTIVE_CONVERSATION / SPEAKING<br/>• 3-level CRITICAL / MODERATE / LOW<br/>• per-hazard cooldown"]
+        Reasoning["<b>Reasoning Layer</b> (LangChain + DeepAgents)<br/>• reroute_around_hazards tool<br/>• queries crowdsourced hazard map"]
+        Reflex --> Priority
+        Hazard --> Priority
+        Reflex -. on-demand .-> Reasoning
+    end
+
+    GMaps["Google Maps"]
+    Convex[("Convex<br/>hazards, overwatch,<br/>profiles, guardian links")]
+
+    Client -->|"video + audio"| Agent
+    Agent -->|"spatial audio"| Client
+    Agent -.-> GMaps
+    Agent <--> Convex
 ```
 
 **Two trigger sources, one output channel.** Reactive conversation opens via
