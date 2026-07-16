@@ -10,23 +10,255 @@ import {
   RoomAudioRenderer,
   useDisconnectButton,
   useLocalParticipant,
+  useRoomContext,
   useTrackToggle,
+  VideoTrack,
 } from "@livekit/components-react";
 import { Button } from "@tuntun-in/ui/components/button";
-import { Track } from "livekit-client";
+import { RoomEvent, Track } from "livekit-client";
 import { Mic, MicOff, PhoneOff, Video, VideoOff } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+
+const log = (...args: unknown[]) => console.log("[tuntun:reflex]", ...args);
+const logError = (...args: unknown[]) =>
+  console.error("[tuntun:reflex]", ...args);
 
 interface TokenResponse {
   participant_token: string;
   server_url: string;
 }
 
+const sourceLabel = (source: Track.Source) => {
+  switch (source) {
+    case Track.Source.Microphone:
+      return "mic";
+    case Track.Source.Camera:
+      return "camera";
+    case Track.Source.ScreenShare:
+      return "screen";
+    case Track.Source.ScreenShareAudio:
+      return "screen-audio";
+    case Track.Source.Unknown:
+      return "unknown";
+    default:
+      return String(source);
+  }
+};
+
+/**
+ * Subscribes to all relevant LiveKit room events and logs them with the
+ * `[tuntun:reflex]` tag so the exact failure point (permissions, track
+ * publish failures, agent connect, etc.) is visible in the browser console.
+ */
+function RoomEventLogger() {
+  const room = useRoomContext();
+
+  useEffect(() => {
+    log("RoomEventLogger attached — room:", room.name || "(connecting)");
+
+    const onConnected = () => log("Room CONNECTED — name:", room.name);
+    const onDisconnected = (reason?: unknown) =>
+      logError("Room DISCONNECTED — reason:", String(reason));
+    const onReconnecting = () => log("Room RECONNECTING...");
+    const onReconnected = () => log("Room RECONNECTED");
+    const onConnectionQuality = (
+      quality: unknown,
+      participantIdentity: unknown
+    ) =>
+      log(
+        "connection_quality_changed — quality:",
+        quality,
+        "participant:",
+        participantIdentity
+      );
+    const onParticipantConnected = (participant: unknown) => {
+      const p = participant as {
+        identity?: string;
+        sid?: string;
+        kind?: number;
+      };
+      log(
+        "participant_connected — identity:",
+        p?.identity,
+        "sid:",
+        p?.sid,
+        "kind:",
+        p?.kind
+      );
+    };
+    const onParticipantDisconnected = (participant: unknown) => {
+      const p = participant as { identity?: string };
+      log("participant_disconnected — identity:", p?.identity);
+    };
+    const onLocalTrackPublished = (publication: unknown, track: unknown) => {
+      const pub = publication as {
+        source?: Track.Source;
+        kind?: number;
+        sid?: string;
+        name?: string;
+        muted?: boolean;
+      };
+      const tr = track as { id?: string };
+      log(
+        "local_track_published — source:",
+        sourceLabel(pub.source ?? Track.Source.Unknown),
+        "kind:",
+        pub.kind,
+        "sid:",
+        pub.sid,
+        "name:",
+        pub.name,
+        "muted:",
+        pub.muted,
+        "trackId:",
+        tr?.id
+      );
+    };
+    const onLocalTrackUnpublished = (publication: unknown) => {
+      const pub = publication as { source?: Track.Source; sid?: string };
+      log(
+        "local_track_unpublished — source:",
+        sourceLabel(pub.source ?? Track.Source.Unknown),
+        "sid:",
+        pub.sid
+      );
+    };
+    const onTrackSubscriptionFailed = (
+      sid: unknown,
+      participant: unknown,
+      reason?: unknown
+    ) => {
+      const p = participant as { identity?: string };
+      logError(
+        "track_subscription_failed — trackSid:",
+        sid,
+        "participant:",
+        p?.identity,
+        "reason:",
+        reason
+      );
+    };
+    const onTrackPublished = (publication: unknown, participant: unknown) => {
+      const pub = publication as {
+        source?: Track.Source;
+        kind?: number;
+        sid?: string;
+        muted?: boolean;
+      };
+      const p = participant as { identity?: string };
+      log(
+        "track_published (remote) — participant:",
+        p?.identity,
+        "source:",
+        sourceLabel(pub.source ?? Track.Source.Unknown),
+        "kind:",
+        pub.kind,
+        "muted:",
+        pub.muted
+      );
+    };
+    const onTrackSubscribed = (
+      track: unknown,
+      publication: unknown,
+      participant: unknown
+    ) => {
+      const tr = track as { kind?: number; sid?: string };
+      const pub = publication as { source?: Track.Source };
+      const p = participant as { identity?: string };
+      log(
+        "track_subscribed — participant:",
+        p?.identity,
+        "source:",
+        sourceLabel(pub.source ?? Track.Source.Unknown),
+        "trackKind:",
+        tr?.kind,
+        "sid:",
+        tr?.sid
+      );
+    };
+    const onActiveSpeakersChanged = (speakers: unknown) => {
+      const list = (speakers as Array<{ identity?: string; sid?: string }>).map(
+        (s) => ({ identity: s.identity, sid: s.sid })
+      );
+      log("active_speakers_changed —", list.length, "active:", list);
+    };
+    const onMediaDevicesChanged = () => log("media_devices_changed");
+
+    // Data channel messages (agent uses these for transcript/state updates)
+    const onDataReceived = (payload: unknown) => {
+      const text =
+        typeof payload === "string"
+          ? payload
+          : (payload as Uint8Array | ArrayBuffer | Blob | undefined);
+      log("data_received — payload:", text);
+    };
+
+    // Transcription events from the agent
+    const onTranscriptionReceived = (
+      segments: unknown,
+      participant: unknown,
+      publication: unknown
+    ) => {
+      const p = participant as { identity?: string };
+      const segs = segments as Array<{
+        id?: string;
+        text?: string;
+        final?: boolean;
+      }>;
+      log(
+        "transcription_received — participant:",
+        p?.identity,
+        "segments:",
+        segs?.map((s) => ({ id: s.id, text: s.text, final: s.final })),
+        "publication:",
+        publication
+      );
+    };
+
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Disconnected, onDisconnected);
+    room.on(RoomEvent.Reconnecting, onReconnecting);
+    room.on(RoomEvent.Reconnected, onReconnected);
+    room.on(RoomEvent.ConnectionQualityChanged, onConnectionQuality);
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+    room.on(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
+    room.on(RoomEvent.TrackSubscriptionFailed, onTrackSubscriptionFailed);
+    room.on(RoomEvent.TrackPublished, onTrackPublished);
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    room.on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+    room.on(RoomEvent.MediaDevicesChanged, onMediaDevicesChanged);
+    room.on(RoomEvent.DataReceived, onDataReceived);
+    room.on(RoomEvent.TranscriptionReceived, onTranscriptionReceived);
+
+    return () => {
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Disconnected, onDisconnected);
+      room.off(RoomEvent.Reconnecting, onReconnecting);
+      room.off(RoomEvent.Reconnected, onReconnected);
+      room.off(RoomEvent.ConnectionQualityChanged, onConnectionQuality);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+      room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+      room.off(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
+      room.off(RoomEvent.TrackSubscriptionFailed, onTrackSubscriptionFailed);
+      room.off(RoomEvent.TrackPublished, onTrackPublished);
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+      room.off(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+      room.off(RoomEvent.MediaDevicesChanged, onMediaDevicesChanged);
+      room.off(RoomEvent.DataReceived, onDataReceived);
+      room.off(RoomEvent.TranscriptionReceived, onTranscriptionReceived);
+    };
+  }, [room]);
+
+  return null;
+}
+
 function LocalCameraPreview() {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } =
     useLocalParticipant();
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const { buttonProps: micButtonProps } = useTrackToggle({
     source: Track.Source.Microphone,
@@ -36,40 +268,32 @@ function LocalCameraPreview() {
   });
   const { buttonProps: disconnectButtonProps } = useDisconnectButton({});
 
-  const camPub = useMemo(
-    () => localParticipant?.getTrackPublication(Track.Source.Camera),
-    [localParticipant]
-  );
-
-  const mediaStreamTrack = camPub?.videoTrack?.mediaStreamTrack ?? null;
+  const camPub = localParticipant?.getTrackPublication(Track.Source.Camera);
 
   useEffect(() => {
-    const videoEl = videoRef.current;
-    if (!(videoEl && mediaStreamTrack)) {
-      return;
-    }
-
-    const stream = new MediaStream([mediaStreamTrack]);
-    videoEl.srcObject = stream;
-    videoEl
-      .play()
-      .catch((error) => console.error("Failed to play local video:", error));
-
-    return () => {
-      videoEl.srcObject = null;
-    };
-  }, [mediaStreamTrack]);
+    log(
+      "LocalCameraPreview state — micEnabled:",
+      isMicrophoneEnabled,
+      "camEnabled:",
+      isCameraEnabled,
+      "hasCamPub:",
+      Boolean(camPub),
+      "camPubSid:",
+      camPub?.trackSid
+    );
+  }, [isMicrophoneEnabled, isCameraEnabled, camPub]);
 
   return (
     <div className="relative h-full w-full bg-black">
-      {isCameraEnabled && mediaStreamTrack ? (
-        // eslint-disable-next-line jsx-a11y/media-has-caption
-        <video
-          autoPlay
+      {isCameraEnabled && camPub ? (
+        <VideoTrack
           className="pointer-events-none h-full w-full object-cover"
           muted
-          playsInline
-          ref={videoRef}
+          trackRef={{
+            participant: localParticipant,
+            publication: camPub,
+            source: Track.Source.Camera,
+          }}
         />
       ) : (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -132,15 +356,43 @@ export function ReflexCall() {
 
   const handlePreJoinSubmit = async (values: LocalUserChoices) => {
     const roomName = `reflex-${Date.now()}`;
-    const res = await fetch("/api/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        room_name: roomName,
-        participant_identity: values.username,
-      }),
-    });
+    log(
+      "PreJoin submit — roomName:",
+      roomName,
+      "username:",
+      values.username,
+      "videoEnabled:",
+      values.videoEnabled,
+      "audioEnabled:",
+      values.audioEnabled
+    );
+    let res: Response;
+    try {
+      res = await fetch("/api/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          room_name: roomName,
+          participant_identity: values.username,
+        }),
+      });
+    } catch (err) {
+      logError("Token fetch network error:", err);
+      return;
+    }
+    if (!res.ok) {
+      logError("Token fetch failed — status:", res.status, res.statusText);
+      const text = await res.text().catch(() => "<no body>");
+      logError("Token fetch response body:", text);
+      return;
+    }
     const data = (await res.json()) as TokenResponse;
+    log(
+      "Token fetched — server_url:",
+      data.server_url,
+      "tokenLen:",
+      data.participant_token.length
+    );
     setTokenResponse(data);
   };
 
@@ -158,7 +410,21 @@ export function ReflexCall() {
           <PreJoin
             defaults={{ videoEnabled: true, audioEnabled: true }}
             joinLabel="Start Reflex Session"
-            onError={(err) => console.error("PreJoin error:", err)}
+            onError={(err) => {
+              const name = err?.name ?? "Error";
+              const message = err?.message ?? String(err);
+              logError("PreJoin error:", err);
+              logError(
+                "PreJoin error detail — name:",
+                name,
+                "message:",
+                message,
+                "\nLikely causes:",
+                "\n  1) Browser denied camera/mic permission (check site permissions)",
+                "\n  2) Page not in a secure context (HTTPS or localhost) — getUserMedia is blocked on plain HTTP LAN IPs",
+                "\n  3) No camera/mic device available"
+              );
+            }}
             onSubmit={handlePreJoinSubmit}
           />
         </div>
@@ -175,6 +441,7 @@ export function ReflexCall() {
         token={tokenResponse.participant_token}
         video={true}
       >
+        <RoomEventLogger />
         <LocalCameraPreview />
         <RoomAudioRenderer />
       </LiveKitRoom>

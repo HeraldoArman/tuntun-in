@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from google.genai import types as genai_types  # noqa: E402
 from livekit.agents import (  # noqa: E402
     Agent,
     AgentServer,
@@ -30,7 +31,29 @@ from livekit.agents import (  # noqa: E402
     cli,
     room_io,
 )
+from livekit.agents.metrics import RealtimeModelMetrics  # noqa: E402
 from livekit.plugins import google  # noqa: E402
+
+# Track source names (matching livekit TrackSource proto enum values)
+_TRACK_SOURCE_NAMES = {
+    0: "UNKNOWN",
+    1: "CAMERA",
+    2: "MICROPHONE",
+    3: "SCREEN_SHARE",
+    4: "SCREEN_SHARE_AUDIO",
+}
+_TRACK_KIND_NAMES = {0: "AUDIO", 1: "VIDEO", 2: "DATA"}
+
+
+def _track_source_name(source: Any) -> str:
+    """Human-readable track source name from a proto enum value."""
+    return _TRACK_SOURCE_NAMES.get(int(source), f"UNKNOWN({source})")
+
+
+def _track_kind_name(kind: Any) -> str:
+    """Human-readable track kind name from a proto enum value."""
+    return _TRACK_KIND_NAMES.get(int(kind), f"UNKNOWN({kind})")
+
 
 # ─── Logging Setup ──────────────────────────────────────────────────────────
 # Verbose logging for maximum debuggability. Every module, every lifecycle
@@ -166,12 +189,27 @@ class TuntunAgent(Agent):
         logger.info("  model: %s", model_name)
         logger.info("  voice: %s", voice)
         logger.info("  temperature: 0.8")
+        logger.info(
+            "  latency tuning: realtime_input_config (aggressive VAD), english default"
+        )
 
         try:
             llm = google.realtime.RealtimeModel(
                 model=model_name,
                 voice=voice,
                 temperature=0.8,
+                # Lower-latency Gemini Live VAD config:
+                # - end_of_speech HIGH: declare turn done quickly after silence
+                # - short silence_duration_ms: less waiting before end-of-speech
+                # - short prefix_padding_ms: less padding before start-of-speech
+                realtime_input_config=genai_types.RealtimeInputConfig(
+                    automatic_activity_detection=genai_types.AutomaticActivityDetection(
+                        end_of_speech_sensitivity="END_SENSITIVITY_HIGH",
+                        start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
+                        prefix_padding_ms=100,
+                        silence_duration_ms=300,
+                    )
+                ),
             )
             logger.info("Gemini Live model created successfully")
         except Exception as exc:
@@ -184,22 +222,27 @@ class TuntunAgent(Agent):
                 "Watch the smartphone camera feed and warn the user about street obstacles: "
                 "parked motorcycles, open manholes, low-hanging banners, potholes, construction barriers. "
                 "Keep warnings short, spatial (left/center/right), and urgent. "
-                "Speak in Indonesian (Bahasa Indonesia) by default unless user speaks English."
+                "Always speak in English by default. "
+                "If the user explicitly speaks in another language (e.g. Bahasa Indonesia), "
+                "you may switch to match them, but always start and default to English."
             ),
             llm=llm,
         )
-        logger.info("TuntunAgent initialized — instructions set, LLM wired")
+        logger.info(
+            "TuntunAgent initialized — instructions set, LLM wired (English default)"
+        )
 
     async def on_enter(self) -> None:
         """Called when agent enters the room and is ready to interact."""
         logger.info("TuntunAgent.on_enter — agent joined the room")
-        logger.info("  Generating greeting reply...")
+        logger.info("  Generating greeting reply (English)...")
 
         try:
             t0 = time.monotonic()
             await self.session.generate_reply(
                 instructions=(
-                    "Greet the user briefly and tell them you are watching for obstacles."
+                    "Greet the user briefly in English and tell them you are "
+                    "watching for obstacles. Keep it to one short sentence."
                 )
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
@@ -213,7 +256,186 @@ class TuntunAgent(Agent):
         logger.info("TuntunAgent.on_exit — agent leaving room")
 
 
+# ─── Session Event Loggers ──────────────────────────────────────────────────
+
+
+def _attach_session_event_loggers(session: AgentSession) -> None:
+    """Attach verbose event listeners to an AgentSession so every user/agent
+    state transition, speech creation, transcription, and metrics report is
+    logged. This makes latency breakdowns (time-to-first-token, duration,
+    token counts) visible per turn."""
+    logger.info("Attaching session event loggers")
+
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        logger.info(
+            "[SESSION-EVENT] user_state_changed — old=%s new=%s",
+            ev.old_state,
+            ev.new_state,
+        )
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        logger.info(
+            "[SESSION-EVENT] agent_state_changed — old=%s new=%s",
+            ev.old_state,
+            ev.new_state,
+        )
+
+    @session.on("user_input_transcribed")
+    def on_user_input_transcribed(ev):
+        logger.info(
+            "[SESSION-EVENT] user_input_transcribed — is_final=%s text=%r lang=%s",
+            ev.is_final,
+            ev.transcript,
+            getattr(ev, "language", None),
+        )
+
+    @session.on("speech_created")
+    def on_speech_created(ev):
+        logger.info("[SESSION-EVENT] speech_created — agent started speaking")
+
+    @session.on("conversation_item_added")
+    def on_conversation_item_added(ev):
+        role = getattr(ev, "role", "<unknown>")
+        text = getattr(ev, "text", "") or getattr(ev, "message", "")
+        logger.info(
+            "[SESSION-EVENT] conversation_item_added — role=%s text=%r",
+            role,
+            text,
+        )
+
+    @session.on("metrics_collected")
+    def on_metrics_collected(ev):
+        try:
+            reports = getattr(ev, "metrics", None) or []
+            for report in reports:
+                if isinstance(report, RealtimeModelMetrics):
+                    logger.info(
+                        "[METRICS] realtime_model — "
+                        "ttft=%.3fs duration=%.3fs "
+                        "input_tokens=%d output_tokens=%d "
+                        "tokens/s=%.1f cancelled=%s",
+                        report.ttft,
+                        report.duration,
+                        report.input_tokens,
+                        report.output_tokens,
+                        report.tokens_per_second,
+                        report.cancelled,
+                    )
+                else:
+                    logger.info(
+                        "[METRICS] %s — duration=%.3fs",
+                        getattr(report, "type", "unknown"),
+                        getattr(report, "duration", 0.0),
+                    )
+        except Exception as exc:
+            logger.error("Failed to log metrics: %s", exc, exc_info=True)
+
+    @session.on("error")
+    def on_error(ev):
+        logger.error("[SESSION-EVENT] error — %s", ev)
+
+
 # ─── Server + Session Handler ──────────────────────────────────────────────
+
+
+def _attach_room_event_loggers(room: Any) -> None:
+    """Attach verbose event listeners to a livekit.rtc.Room so every
+    participant connect/disconnect, track publish/subscribe/fail, and
+    connection state change is logged. This makes it obvious when the
+    user's mic/camera media fails to reach the agent."""
+    logger.info("Attaching room event loggers to room: %s", room.name)
+
+    @room.on("participant_connected")
+    def on_participant_connected(participant):
+        logger.info(
+            "[ROOM-EVENT] participant_connected — identity=%s sid=%s kind=%s state=%s",
+            participant.identity,
+            participant.sid,
+            participant.kind,
+            participant.state,
+        )
+
+    @room.on("participant_disconnected")
+    def on_participant_disconnected(participant):
+        logger.info(
+            "[ROOM-EVENT] participant_disconnected — identity=%s sid=%s",
+            participant.identity,
+            participant.sid,
+        )
+
+    @room.on("track_published")
+    def on_track_published(publication, participant):
+        logger.info(
+            "[ROOM-EVENT] track_published — participant=%s source=%s kind=%s sid=%s muted=%s",
+            participant.identity,
+            _track_source_name(publication.source),
+            _track_kind_name(publication.kind),
+            publication.sid,
+            publication.muted,
+        )
+
+    @room.on("track_subscribed")
+    def on_track_subscribed(track, publication, participant):
+        logger.info(
+            "[ROOM-EVENT] track_subscribed — participant=%s source=%s kind=%s sid=%s trackId=%s",
+            participant.identity,
+            _track_source_name(publication.source),
+            _track_kind_name(publication.kind),
+            publication.sid,
+            getattr(track, "sid", "<unknown>"),
+        )
+
+    @room.on("track_unsubscribed")
+    def on_track_unsubscribed(track, publication, participant):
+        logger.info(
+            "[ROOM-EVENT] track_unsubscribed — participant=%s source=%s sid=%s",
+            participant.identity,
+            _track_source_name(publication.source),
+            publication.sid,
+        )
+
+    @room.on("track_subscription_failed")
+    def on_track_subscription_failed(sid, participant):
+        logger.error(
+            "[ROOM-EVENT] track_subscription_failed — trackSid=%s participant=%s",
+            sid,
+            participant.identity,
+        )
+
+    @room.on("track_muted")
+    def on_track_muted(publication, participant):
+        logger.info(
+            "[ROOM-EVENT] track_muted — participant=%s source=%s sid=%s",
+            participant.identity,
+            _track_source_name(publication.source),
+            publication.sid,
+        )
+
+    @room.on("track_unmuted")
+    def on_track_unmuted(publication, participant):
+        logger.info(
+            "[ROOM-EVENT] track_unmuted — participant=%s source=%s sid=%s",
+            participant.identity,
+            _track_source_name(publication.source),
+            publication.sid,
+        )
+
+    @room.on("connection_state_changed")
+    def on_connection_state_changed(connection_state):
+        logger.info(
+            "[ROOM-EVENT] connection_state_changed — state=%s", connection_state
+        )
+
+    @room.on("disconnected")
+    def on_disconnected(reason=None):
+        logger.info(
+            "[ROOM-EVENT] disconnected — reason=%s (%s)",
+            reason,
+            getattr(reason, "name", "<unknown>"),
+        )
+
 
 server = AgentServer()
 logger.info("AgentServer created")
@@ -237,6 +459,15 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info("  job_id=%s", getattr(ctx, "job_id", "<unknown>"))
     logger.info("  agent_name=tuntun-agent")
 
+    # ── Attach verbose room event loggers ──
+    # Logs every participant connect/disconnect, track publish/subscribe/fail,
+    # and connection state change so we can see exactly whether the user's
+    # mic/camera media ever reaches the agent.
+    try:
+        _attach_room_event_loggers(ctx.room)
+    except Exception as exc:
+        logger.error("Failed to attach room event loggers: %s", exc, exc_info=True)
+
     # ── Convex connectivity check ──
     logger.info("Setting up Convex connection...")
     client = _get_convex_client()
@@ -252,14 +483,40 @@ async def entrypoint(ctx: JobContext) -> None:
     t_session = time.monotonic()
 
     try:
-        session = AgentSession()
+        session = AgentSession(
+            # Lower-latency turn handling:
+            # - short aec_warmup_duration: less silence at session start
+            # - aggressive endpointing: declare user turn done quickly
+            # - preemptive generation: start drafting before turn fully ends
+            aec_warmup_duration=0.5,
+            turn_handling={
+                "endpointing": {
+                    "mode": "fixed",
+                    "min_delay": 0.3,
+                    "max_delay": 1.5,
+                },
+                "preemptive_generation": {
+                    "enabled": True,
+                    "preemptive_tts": True,
+                },
+            },
+        )
         logger.info(
-            "AgentSession created: elapsed=%.1fms",
+            "AgentSession created: elapsed=%.1fms "
+            "(aec_warmup=0.5s, endpointing min=0.3s max=1.5s, preemptive=on)",
             (time.monotonic() - t_session) * 1000,
         )
     except Exception as exc:
         logger.error("Failed to create AgentSession: %s", exc, exc_info=True)
         raise
+
+    # ── Attach verbose session event loggers ──
+    # Logs user/agent state transitions, speech creation, transcription,
+    # and per-turn metrics (TTFT, duration, token counts).
+    try:
+        _attach_session_event_loggers(session)
+    except Exception as exc:
+        logger.error("Failed to attach session event loggers: %s", exc, exc_info=True)
 
     # ── Configure room I/O ──
     logger.info(
