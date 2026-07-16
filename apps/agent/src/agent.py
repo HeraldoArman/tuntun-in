@@ -1,19 +1,24 @@
 """
 Tuntun.In AI Mobility Companion Agent — entrypoint.
 
-Reflex architecture:
-- Reflex Layer: Gemini Live (instant audio-visual obstacle detection).
-  Navigation uses Google Maps direct API calls (no reasoning layer).
-
-A LangChain DeepAgents reasoning layer for multi-step route orchestration is
-planned but NOT yet implemented. The navigator module calls the Google Maps
-API directly via httpx. `deepagents` remains in pyproject.toml for forward
-compatibility only.
+Dual-brain architecture:
+- Reflex Layer: Gemini Live (instant audio-visual obstacle detection +
+  spatial warnings). Gated behind the "Hey Tutu" wake word for reactive
+  conversation.
+- Hazard Detection Loop: separate perception loop (fast Gemini flash per
+  frame) feeding a Priority Manager that owns the state machine + 3-level
+  interrupt policy + per-hazard cooldown. Proactive warnings bypass the wake
+  gate.
+- Reasoning Layer: LangChain + DeepAgents, invoked on demand via the
+  reroute_around_hazards function_tool to reason about a hazard-aware detour.
+- Deep Navigator: Google Maps directions via the navigate_to function_tool,
+  grounded in live camera landmarks.
 
 Wake word gating: the agent is gated behind the "Hey Tutu" wake word
 (openwakeword ONNX model). Until the wake word is detected, the agent stays
 silent and does not react to ambient speech — so it won't interrupt when the
-user is talking to someone else.
+user is talking to someone else. Proactive hazard warnings come from the
+separate hazard loop, not the wake word path.
 
 The implementation lives in the `tuntun_agent` package. This file wires up
 logging, the AgentServer, and the per-room session handler. Logging is verbose
@@ -47,11 +52,13 @@ from tuntun_agent.events import (  # noqa: E402
     attach_session_event_loggers,
     attach_video_frame_capture,
 )
+from tuntun_agent.hazard_loop import attach_hazard_loop  # noqa: E402
 from tuntun_agent.logging_setup import (  # noqa: E402
     get_logger,
     log_startup_env,
     setup_logging,
 )
+from tuntun_agent.priority import attach_priority_manager  # noqa: E402
 from tuntun_agent.wakeword import attach_wake_word  # noqa: E402
 
 setup_logging()
@@ -164,6 +171,16 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as exc:
         logger.error("Failed to attach session event loggers: %s", exc, exc_info=True)
 
+    # ── Priority Manager (state machine + hazard/conversation arbiter) ──
+    # Owns the IDLE / ACTIVE_CONVERSATION / SPEAKING state (driven by
+    # agent_state_changed) and the 3-level CRITICAL/MODERATE/LOW interrupt
+    # policy + per-hazard cooldown. Fed by the hazard detection loop below.
+    try:
+        priority_manager = attach_priority_manager(session)
+    except Exception as exc:
+        logger.error("Failed to attach PriorityManager: %s", exc, exc_info=True)
+        priority_manager = None
+
     # ── Deep Navigator + Overwatch: receive data from the web client ──
     # The web client publishes on two data topics:
     #   "gps"      -> {type:"gps", lat, lng}          (Deep Navigator origin)
@@ -221,6 +238,19 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("Wake word detector attached — gating active ('Hey Tutu')")
     except Exception as exc:
         logger.error("Failed to attach wake word detector: %s", exc, exc_info=True)
+
+    # ── Hazard Detection Loop (proactive warnings, bypasses wake word) ──
+    # The second independent trigger source. Samples the chest-camera frame
+    # every ~1.5s, classifies hazards with a fast Gemini model, and feeds them
+    # to the PriorityManager which decides interrupt/skip/cooldown. This
+    # replaces the wakeword module's old proactive poll and gives full control
+    # over priority + cooldown, as the design doc prescribes.
+    if priority_manager is not None:
+        try:
+            attach_hazard_loop(session, priority_manager)
+            logger.info("Hazard detection loop attached — proactive warnings on")
+        except Exception as exc:
+            logger.error("Failed to attach hazard loop: %s", exc, exc_info=True)
 
     total_ms = (time.monotonic() - t_start) * 1000
     logger.info(

@@ -21,14 +21,12 @@ Design
         opens the mic for the user's next utterance.
 5. A cooldown (``_WAKE_COOLDOWN``) prevents rapid re-triggering.
 
-NOTE on proactive obstacle warnings under manual mode:
-    Manual turn detection means Gemini will only "speak" when we call
-    ``generate_reply``. To preserve proactive safety warnings (the core value
-    of the Reflex Layer) without sacrificing wake-word gating, the detector
-    periodically (every ``_PROACTIVE_INTERVAL``) opens a short proactive turn
-    during which Gemini can emit any urgent obstacle warning it sees in the
-    camera. This gives near-instant hazard alerts while still keeping the
-    agent quiet during normal conversation.
+NOTE on proactive obstacle warnings:
+    This module handles ONLY reactive conversation (wake word -> open turn).
+    Proactive hazard warnings are owned by the separate Hazard Detection Loop
+    (``hazard_loop.py``) + ``PriorityManager``, which bypass the wake gate and
+    classify/interrupt with 3-level priority. Keeping the two trigger sources
+    independent is the core of the design doc's dual-trigger architecture.
 """
 
 from __future__ import annotations
@@ -70,9 +68,6 @@ _WAKE_THRESHOLD = 0.5
 _WAKE_CONSECUTIVE_FRAMES = 3
 # Seconds after a detection before we accept another.
 _WAKE_COOLDOWN = 3.0
-# Seconds between proactive "safety check" turns so Gemini can warn about
-# obstacles even when the user hasn't said the wake word recently.
-_PROACTIVE_INTERVAL = 12.0
 
 # Path to the bundled ONNX wake-word model relative to the package src root.
 _MODEL_PATH = Path(__file__).resolve().parent.parent / "onnx" / "hey_tutu.onnx"
@@ -90,7 +85,6 @@ class HeyTutuDetector:
         self._model: Any = None
         self._audio_stream: rtc.AudioStream | None = None
         self._task: asyncio.Task[Any] | None = None
-        self._proactive_task: asyncio.Task[Any] | None = None
         self._consecutive = 0
         self._last_wake = 0.0
         self._stopped = False
@@ -203,9 +197,6 @@ class HeyTutuDetector:
             if t.kind == rtc.TrackKind.KIND_AUDIO:
                 self._detach_track()
 
-        # Start the proactive safety-check loop.
-        self._proactive_task = asyncio.create_task(self._proactive_loop())
-
     def _attach_track(self, track: rtc.Track) -> None:
         """Open an AudioStream on the mic track at 16 kHz mono."""
         if self._audio_stream is not None:
@@ -310,51 +301,12 @@ class HeyTutuDetector:
         except Exception as exc:
             logger.error("Wake word: generate_reply failed: %s", exc, exc_info=True)
 
-    async def _proactive_loop(self) -> None:
-        """Periodically open a short proactive turn so Gemini can emit urgent
-        obstacle warnings from the camera even when the user hasn't said the
-        wake word. This preserves the Reflex Layer's safety value under
-        manual turn detection."""
-        logger.info(
-            "Wake word proactive safety loop started — interval=%.0fs",
-            _PROACTIVE_INTERVAL,
-        )
-        try:
-            while not self._stopped:
-                await asyncio.sleep(_PROACTIVE_INTERVAL)
-                if self._stopped:
-                    break
-                now = time.monotonic()
-                # Skip if the user spoke recently (a real turn just happened).
-                if (now - self._last_wake) < _PROACTIVE_INTERVAL:
-                    continue
-                try:
-                    await self._session.generate_reply(
-                        instructions=(
-                            "Proactive safety check: silently scan the camera "
-                            "feed for any IMMEDIATE danger to the user (obstacle "
-                            "in their path, drop, oncoming vehicle, fall). If "
-                            "there IS urgent danger, give a short spatial "
-                            "warning now. If there is NO immediate danger, say "
-                            "nothing and do not speak — stay silent. Do not "
-                            "narrate or comment unless there is a real hazard."
-                        ),
-                    )
-                    logger.debug("Wake word: proactive safety check dispatched")
-                except Exception as exc:
-                    logger.debug("Wake word: proactive check skipped: %s", exc)
-        except asyncio.CancelledError:
-            logger.info("Wake word proactive loop cancelled")
-
     async def stop(self) -> None:
         """Stop all loops and clean up."""
         self._stopped = True
         if self._task is not None:
             self._task.cancel()
             self._task = None
-        if self._proactive_task is not None:
-            self._proactive_task.cancel()
-            self._proactive_task = None
         if self._audio_stream is not None:
             with contextlib.suppress(Exception):
                 await self._audio_stream.aclose()

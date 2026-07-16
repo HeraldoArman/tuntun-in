@@ -19,6 +19,7 @@ from tuntun_agent.crowdsource import report_hazard_flow
 from tuntun_agent.logging_setup import get_logger
 from tuntun_agent.navigator import fetch_route_and_reply, spawn_background_task
 from tuntun_agent.overwatch import trigger_overwatch_flow
+from tuntun_agent.reasoning import compute_detour
 
 logger = get_logger()
 
@@ -53,6 +54,12 @@ TUNTUN_INSTRUCTIONS = (
     "turn 'turn left in 50 meters' into 'turn left just past the blue food cart'. "
     "Advance to the next maneuver as the user approaches landmarks. Safety "
     "warnings ALWAYS override navigation chatter."
+    "\n\n"
+    "REASONING LAYER (SAFER ROUTE): If the user asks for a safer route, or a "
+    "hazard on their current path makes the obvious route risky, call the "
+    "reroute_around_hazards tool with the destination. It checks the public "
+    "crowdsourced hazard map near the user and reasons about a detour; the "
+    "result arrives as a follow-up. Speak the holding message right away."
     "\n\n"
     "OVERWATCH MODE (EMERGENCY SPECTATOR): This is your highest-priority safety "
     "escalation. Call the trigger_overwatch tool IMMEDIATELY — without waiting "
@@ -275,3 +282,45 @@ class TuntunAgent(Agent):
         )
         # Internal-only ack — the instructions forbid speaking this aloud.
         return "Hazard reported to the map."
+
+    @function_tool()
+    async def reroute_around_hazards(self, destination: str) -> str:
+        """Find a safer walking route to a destination that avoids known
+        crowdsourced hazards near the user (Reasoning Layer).
+
+        Call this when the user wants a safer route, or after a hazard on their
+        current path makes the obvious route risky. It queries the public
+        crowdsourced hazard map for damaged road/sidalk near the user, reasons
+        about a detour, and speaks a landmark-grounded alternative. Returns a
+        short holding message immediately; the detour arrives as a follow-up.
+
+        Args:
+            destination: The place the user wants to reach, as free text
+                (e.g. "the train station", "Jl. Sudirman 10").
+        """
+        userdata = self.session.userdata
+        lat = userdata.get("lat") if isinstance(userdata, dict) else None
+        lng = userdata.get("lng") if isinstance(userdata, dict) else None
+        if lat is None or lng is None:
+            logger.info(
+                "reroute_around_hazards: no GPS origin yet — destination=%r",
+                destination,
+            )
+            return (
+                "I need your location to find a safer route. Please allow "
+                "location access in the browser."
+            )
+
+        origin = (float(lat), float(lng))
+        logger.info(
+            "reroute_around_hazards: dispatching reasoning task — destination=%r "
+            "origin=(%.6f, %.6f)",
+            destination,
+            origin[0],
+            origin[1],
+        )
+        spawn_background_task(compute_detour(self.session, origin, destination))
+        return (
+            f"Checking known hazards near your route to {destination} and "
+            f"finding a safer way — give me a moment."
+        )
