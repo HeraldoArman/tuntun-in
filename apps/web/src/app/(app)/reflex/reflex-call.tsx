@@ -7,7 +7,10 @@ import type { LocalUserChoices } from "@livekit/components-react";
 import {
   LiveKitRoom,
   PreJoin,
+  RoomAudioRenderer,
+  useDisconnectButton,
   useLocalParticipant,
+  useTrackToggle,
 } from "@livekit/components-react";
 import { Button } from "@tuntun-in/ui/components/button";
 import { Track } from "livekit-client";
@@ -21,20 +24,23 @@ interface TokenResponse {
 }
 
 function LocalCameraPreview() {
-  const { localParticipant } = useLocalParticipant();
+  const { localParticipant, isMicrophoneEnabled, isCameraEnabled } =
+    useLocalParticipant();
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const { buttonProps: micButtonProps } = useTrackToggle({
+    source: Track.Source.Microphone,
+  });
+  const { buttonProps: camButtonProps } = useTrackToggle({
+    source: Track.Source.Camera,
+  });
+  const { buttonProps: disconnectButtonProps } = useDisconnectButton({});
 
   const camPub = useMemo(
     () => localParticipant?.getTrackPublication(Track.Source.Camera),
     [localParticipant]
   );
-  const micPub = useMemo(
-    () => localParticipant?.getTrackPublication(Track.Source.Microphone),
-    [localParticipant]
-  );
 
-  const camEnabled = camPub?.isMuted === false;
-  const micEnabled = micPub?.isMuted === false;
   const mediaStreamTrack = camPub?.videoTrack?.mediaStreamTrack ?? null;
 
   useEffect(() => {
@@ -54,69 +60,62 @@ function LocalCameraPreview() {
     };
   }, [mediaStreamTrack]);
 
-  const toggleMic = async () => {
-    if (!localParticipant) {
-      return;
-    }
-    await localParticipant.setMicrophoneEnabled(!micEnabled);
-  };
-
-  const toggleCam = async () => {
-    if (!localParticipant) {
-      return;
-    }
-    await localParticipant.setCameraEnabled(!camEnabled);
-  };
-
   return (
     <div className="relative h-full w-full bg-black">
-      {camEnabled && mediaStreamTrack ? (
+      {isCameraEnabled && mediaStreamTrack ? (
         // eslint-disable-next-line jsx-a11y/media-has-caption
         <video
           autoPlay
-          className="h-full w-full object-cover"
+          className="pointer-events-none h-full w-full object-cover"
           muted
           playsInline
           ref={videoRef}
         />
       ) : (
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="flex h-24 w-24 items-center justify-center rounded-full bg-muted">
             <VideoOff className="h-10 w-10 text-muted-foreground" />
           </div>
         </div>
       )}
 
-      <div className="absolute right-0 bottom-8 left-0 flex items-center justify-center gap-4">
+      <div className="absolute right-0 bottom-8 left-0 z-10 flex items-center justify-center gap-4">
         <Button
-          aria-label={micEnabled ? "Turn microphone off" : "Turn microphone on"}
-          onClick={toggleMic}
+          aria-label={
+            isMicrophoneEnabled ? "Turn microphone off" : "Turn microphone on"
+          }
           size="icon"
-          variant={micEnabled ? "default" : "destructive"}
+          type="button"
+          variant={isMicrophoneEnabled ? "default" : "destructive"}
+          {...micButtonProps}
         >
-          {micEnabled ? (
+          {isMicrophoneEnabled ? (
             <Mic className="h-5 w-5" />
           ) : (
             <MicOff className="h-5 w-5" />
           )}
         </Button>
+
         <Button
-          aria-label={camEnabled ? "Turn camera off" : "Turn camera on"}
-          onClick={toggleCam}
+          aria-label={isCameraEnabled ? "Turn camera off" : "Turn camera on"}
           size="icon"
-          variant={camEnabled ? "default" : "destructive"}
+          type="button"
+          variant={isCameraEnabled ? "default" : "destructive"}
+          {...camButtonProps}
         >
-          {camEnabled ? (
+          {isCameraEnabled ? (
             <Video className="h-5 w-5" />
           ) : (
             <VideoOff className="h-5 w-5" />
           )}
         </Button>
+
         <Button
           aria-label="End reflex session"
-          onClick={() => localParticipant?.room?.disconnect()}
           size="icon"
+          type="button"
           variant="destructive"
+          {...disconnectButtonProps}
         >
           <PhoneOff className="h-5 w-5" />
         </Button>
@@ -177,6 +176,7 @@ export function ReflexCall() {
         video={true}
       >
         <LocalCameraPreview />
+        <RoomAudioRenderer />
       </LiveKitRoom>
     </div>
   );
