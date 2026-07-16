@@ -38,11 +38,17 @@ import { useEffect, useRef, useState } from "react";
 /**
  * Chest-mounted phones should use the rear (environment) camera by default,
  * not the selfie cam, so the Reflex AI sees the path ahead of the user.
- * `facingMode: "environment"` maps to the back camera on mobile devices.
+ * A hard `facingMode: "environment"` constraint throws OverconstrainedError on
+ * desktops (no environment cam), leaving the track unpublished and the call view
+ * stuck on "Camera is off" — so only request it on mobile, where a rear cam
+ * actually exists. Desktop falls back to the default (front) cam.
  */
-const REAR_CAMERA_CAPTURE: VideoCaptureOptions = {
-  facingMode: "environment",
-};
+const isMobile =
+  typeof navigator !== "undefined" &&
+  /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+const REAR_CAMERA_CAPTURE: VideoCaptureOptions = isMobile
+  ? { facingMode: "environment" }
+  : {};
 
 const log = (...args: unknown[]) => console.log("[tuntun:reflex]", ...args);
 const logError = (...args: unknown[]) =>
