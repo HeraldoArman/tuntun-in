@@ -129,8 +129,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 "turn_detection": "manual",
                 "endpointing": {
                     "mode": "fixed",
-                    "min_delay": 0.3,
-                    "max_delay": 1.5,
+                    "min_delay": 0.2,
+                    "max_delay": 0.8,
                 },
                 "preemptive_generation": {
                     "enabled": True,
@@ -159,7 +159,7 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info(
             "AgentSession created: elapsed=%.1fms "
             "(turn_detection=manual, aec_warmup=0.5s, "
-            "endpointing min=0.3s max=1.5s, preemptive=on)",
+            "endpointing min=0.2s max=0.8s, preemptive=on)",
             (time.monotonic() - t_session) * 1000,
         )
     except Exception as exc:

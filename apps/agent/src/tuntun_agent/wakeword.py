@@ -64,8 +64,9 @@ _OPENWAKEWORD_SAMPLE_RATE = 16000
 
 # Score above which a frame is considered "wake-like".
 _WAKE_THRESHOLD = 0.5
-# Number of consecutive above-threshold frames required to fire.
-_WAKE_CONSECUTIVE_FRAMES = 3
+# Number of consecutive above-threshold frames required to fire. 2 frames =
+# 160ms; lower than this rises false positives, higher adds detect latency.
+_WAKE_CONSECUTIVE_FRAMES = 2
 # Seconds after a detection before we accept another.
 _WAKE_COOLDOWN = 3.0
 
@@ -283,21 +284,34 @@ class HeyTutuDetector:
             _spawn(self._on_wake_word())
 
     async def _on_wake_word(self) -> None:
-        """Called when the wake word fires: interrupt any speech and open a
-        listening turn for the user's command."""
-        try:
-            await self._session.interrupt()
-        except Exception as exc:
-            logger.warning("Wake word: interrupt failed: %s", exc)
+        """Called when the wake word fires: interrupt any in-progress speech and
+        answer the user's request in a single reply (no ack round trip).
+
+        Latency-critical: the old flow spoke an acknowledgment ('Yes?') first,
+        then listened — that doubled round trips (~1-2s extra). Now one
+        ``generate_reply`` answers the request directly. The user should say the
+        wake word + their request in one utterance ('Hey Tutu, what's ahead?').
+        If they only said the wake word, fall back to a short 'Yes?'.
+        """
+        # Only interrupt if the agent is currently speaking — when idle (the
+        # common wake case) interrupt is a wasted round trip.
+        state = getattr(self._session.agent_state, "value", str(self._session.agent_state))
+        if state == "speaking":
+            try:
+                await self._session.interrupt()
+            except Exception as exc:
+                logger.warning("Wake word: interrupt failed: %s", exc)
         try:
             await self._session.generate_reply(
                 instructions=(
-                    "The user just said your wake word, 'Hey Tutu'. "
-                    "Acknowledge briefly (one short phrase like 'Yes?' or "
-                    "'I'm here') and then listen for their request."
+                    "The user just said your wake word 'Hey Tutu' followed by "
+                    "their request. Answer their request directly and concisely "
+                    "in one short reply. Do NOT say 'yes', 'I'm here', or any "
+                    "acknowledgment first — that wastes a turn. If the user only "
+                    "said the wake word with no request, reply with just 'Yes?'."
                 ),
             )
-            logger.info("Wake word: listening turn opened")
+            logger.info("Wake word: reply turn opened")
         except Exception as exc:
             logger.error("Wake word: generate_reply failed: %s", exc, exc_info=True)
 

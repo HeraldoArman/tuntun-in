@@ -9,7 +9,6 @@ guidance.
 from __future__ import annotations
 
 import os
-import time
 
 from google.genai import types as genai_types
 from livekit.agents import Agent, function_tool
@@ -126,8 +125,8 @@ class TuntunAgent(Agent):
                     automatic_activity_detection=genai_types.AutomaticActivityDetection(
                         end_of_speech_sensitivity="END_SENSITIVITY_HIGH",
                         start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
-                        prefix_padding_ms=100,
-                        silence_duration_ms=300,
+                        prefix_padding_ms=80,
+                        silence_duration_ms=220,
                     )
                 ),
             )
@@ -142,23 +141,14 @@ class TuntunAgent(Agent):
         )
 
     async def on_enter(self) -> None:
-        """Called when agent enters the room and is ready to interact."""
-        logger.info("TuntunAgent.on_enter — agent joined the room")
-        logger.info("  Generating greeting reply (English)...")
+        """Called when agent enters the room and is ready to interact.
 
-        try:
-            t0 = time.monotonic()
-            await self.session.generate_reply(
-                instructions=(
-                    "Greet the user briefly in English and tell them you are "
-                    "watching for obstacles. Keep it to one short sentence."
-                )
-            )
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            logger.info("Greeting generated successfully: elapsed=%.1fms", elapsed_ms)
-        except Exception as exc:
-            logger.error("Failed to generate greeting: %s", exc, exc_info=True)
-            raise
+        No greeting — the agent is gated behind the "Hey Tutu" wake word. With
+        manual turn detection, speaking here would bypass the gate and the agent
+        would respond immediately on join. Stay silent until the wake word (or
+        the proactive hazard loop) opens a turn.
+        """
+        logger.info("TuntunAgent.on_enter — agent joined the room (silent, awaiting wake word)")
 
     async def on_exit(self) -> None:
         """Called when agent is leaving the room."""
