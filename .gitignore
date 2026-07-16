@@ -42,7 +42,6 @@ lerna-debug.log*
 
 # Better-T-Stack
 .alchemy
-.vercel
 
 # Testing
 coverage
@@ -53,3 +52,16 @@ coverage
 .cache
 tmp
 temp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# Agent
+apps/agent/.venv/
+.omo/
+.codegraph/

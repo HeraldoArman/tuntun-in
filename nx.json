@@ -27,5 +27,6 @@
     "dev:setup": {
       "cache": false
     }
-  }
+  },
+  "analytics": true
 }

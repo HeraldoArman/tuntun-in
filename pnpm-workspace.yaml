@@ -1,23 +1,26 @@
 packages:
   - apps/*
   - packages/*
+  - "!apps/agent"
+
 allowBuilds:
-  sharp: true
+  esbuild: true
+  msw: true
   nx: true
+  sharp: true
+
 catalog:
-  dotenv: ^17.4.2
-  zod: ^4.4.3
-  typescript: ^6
-  lucide-react: ^1.23.0
+  '@convex-dev/better-auth': ^0.12.2
+  '@types/react': ^19.2.15
+  '@types/react-dom': ^19.2.3
+  better-auth: ~1.6.9
+  convex: ^1.33.1
+  dotenv: ^17.2.2
+  lucide-react: ^0.546.0
   next-themes: ^0.4.6
-  react: ^19.2.7
-  react-dom: ^19.2.7
-  sonner: ^2.0.7
-  convex: ^1.42.1
-  better-auth: 1.6.15
-  "@convex-dev/better-auth": ^0.12.5
-  "@convex-dev/agent": ^0.6.4
-  "@tailwindcss/postcss": ^4.3.2
-  "@types/react": ^19.2.17
-  "@types/react-dom": ^19.2.3
-  tailwindcss: ^4.3.2
+  react: ^19.2.6
+  react-dom: ^19.2.6
+  sonner: ^2.0.5
+  tailwindcss: ^4.1.18
+  typescript: ^5.9.3
+  zod: ^4.4.3

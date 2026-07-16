@@ -13,6 +13,12 @@
     "dev:web": "nx run-many -t dev --projects=web",
     "dev:server": "nx run-many -t dev --projects=@tuntun-in/backend",
     "dev:setup": "nx run-many -t dev:setup --projects=@tuntun-in/backend",
+    "dev:agent": "nx run agent:dev",
+    "check:agent": "nx run agent:check",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },
@@ -22,12 +28,11 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.2",
+    "@biomejs/biome": "2.4.16",
     "@tuntun-in/config": "workspace:*",
-    "@types/node": "^22.13.14",
-    "nx": "^23.0.1",
+    "nx": "^22.7.5",
     "typescript": "catalog:",
-    "ultracite": "7.9.3"
+    "ultracite": "7.8.3"
   },
-  "packageManager": "pnpm@11.13.1"
+  "packageManager": "pnpm@11.10.0"
 }
