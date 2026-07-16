@@ -17,6 +17,12 @@
 **/.vercel
 *.log
 
+# Python artifacts (keep agent source, exclude venvs/caches)
+**/.venv
+**/.ruff_cache
+**/__pycache__
+**/*.pyc
+
 Dockerfile
 **/Dockerfile
 docker-compose.yml

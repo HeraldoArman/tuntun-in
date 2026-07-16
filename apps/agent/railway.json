@@ -1,0 +1,17 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "apps/agent/Dockerfile",
+    "watchPatterns": [
+      "apps/agent/**",
+      "apps/agent/pyproject.toml",
+      "apps/agent/uv.lock"
+    ]
+  },
+  "deploy": {
+    "startCommand": "uv run python src/agent.py start",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}

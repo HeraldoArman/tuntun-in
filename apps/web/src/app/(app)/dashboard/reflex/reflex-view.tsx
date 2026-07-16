@@ -25,7 +25,7 @@ import {
   PhoneOffIcon,
   ScanEyeIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const AGENT_STATES: Record<string, string> = {
   connecting: "Connecting…",
@@ -186,10 +186,18 @@ function ReflexSessionInner() {
 
 export function ReflexView() {
   const session = useSession(TokenSource.endpoint("/api/token"));
+  const startedRef = useRef(false);
 
-  // Start the session on mount, publishing microphone + camera so the
-  // agent receives audio and video for the reflex layer.
+  // Start the session once on mount, publishing microphone + camera so the
+  // agent receives audio and video for the reflex layer. A ref guard prevents
+  // the effect from re-running across renders (useSession returns a new
+  // object reference each render, which would otherwise loop start/end).
   useEffect(() => {
+    if (startedRef.current) {
+      return;
+    }
+    startedRef.current = true;
+
     const startSession = async () => {
       await session.start({
         tracks: {
@@ -201,6 +209,7 @@ export function ReflexView() {
     startSession().catch(() => {
       // connection errors are surfaced via session state
     });
+
     return () => {
       session.end();
     };
