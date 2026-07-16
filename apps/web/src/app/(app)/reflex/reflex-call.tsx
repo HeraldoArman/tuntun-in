@@ -15,10 +15,20 @@ import {
   VideoTrack,
 } from "@livekit/components-react";
 import { Button } from "@tuntun-in/ui/components/button";
+import type { VideoCaptureOptions } from "livekit-client";
 import { RoomEvent, Track } from "livekit-client";
 import { Mic, MicOff, PhoneOff, Video, VideoOff } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+
+/**
+ * Chest-mounted phones should use the rear (environment) camera by default,
+ * not the selfie cam, so the Reflex AI sees the path ahead of the user.
+ * `facingMode: "environment"` maps to the back camera on mobile devices.
+ */
+const REAR_CAMERA_CAPTURE: VideoCaptureOptions = {
+  facingMode: "environment",
+};
 
 const log = (...args: unknown[]) => console.log("[tuntun:reflex]", ...args);
 const logError = (...args: unknown[]) =>
@@ -439,7 +449,7 @@ export function ReflexCall() {
         onDisconnected={handleDisconnected}
         serverUrl={tokenResponse.server_url}
         token={tokenResponse.participant_token}
-        video={true}
+        video={REAR_CAMERA_CAPTURE}
       >
         <RoomEventLogger />
         <LocalCameraPreview />
