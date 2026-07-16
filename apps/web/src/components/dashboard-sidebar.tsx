@@ -55,7 +55,7 @@ const blindUserNavItems = [
   {
     icon: ScanEyeIcon,
     label: "Reflex AI",
-    href: "/dashboard/reflex",
+    href: "/reflex",
   },
   {
     icon: EyeIcon,
