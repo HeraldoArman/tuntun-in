@@ -4,7 +4,7 @@ WORKDIR /app
 ENV SKIP_ENV_VALIDATION=1
 
 COPY . .
-RUN --mount=type=cache,id=cacheKey:7662d503-b69e-4830-80c0-bd7050eb19b0,target=/pnpm-store pnpm install --store-dir /pnpm-store
+RUN --mount=type=cache,id=s/7662d503-b69e-4830-80c0-bd7050eb19b0-/pnpm-store,target=/pnpm-store pnpm install --store-dir /pnpm-store
 
 ARG NEXT_PUBLIC_CONVEX_URL
 ENV NEXT_PUBLIC_CONVEX_URL=${NEXT_PUBLIC_CONVEX_URL}

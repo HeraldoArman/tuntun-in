@@ -8,14 +8,14 @@ WORKDIR /app
 
 # Install deps (cached layer)
 COPY apps/agent/pyproject.toml apps/agent/uv.lock* ./
-RUN --mount=type=cache,id=cacheKey:c44e7315-4976-4cb6-8278-9f0ac1e7cc60,target=/root/.cache/uv \
+RUN --mount=type=cache,id=s/c44e7315-4976-4cb6-8278-9f0ac1e7cc60-/root/.cache/uv,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
 # Copy source
 COPY apps/agent/src/ ./src/
 
 # Install project
-RUN --mount=type=cache,id=cacheKey:c44e7315-4976-4cb6-8278-9f0ac1e7cc60,target=/root/.cache/uv \
+RUN --mount=type=cache,id=s/c44e7315-4976-4cb6-8278-9f0ac1e7cc60-/root/.cache/uv,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 # Production stage
