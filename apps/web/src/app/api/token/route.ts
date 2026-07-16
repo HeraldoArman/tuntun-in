@@ -7,7 +7,7 @@ export const revalidate = 0;
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
-  const roomName = String(body.room_name ?? `room-${Date.now()}`);
+  const roomName = String(body.room_name ?? `reflex-${Date.now()}`);
   const identity = String(body.participant_identity ?? `user-${Date.now()}`);
 
   const apiKey = process.env.LIVEKIT_API_KEY;

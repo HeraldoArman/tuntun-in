@@ -6,7 +6,9 @@ import {
   useLocalParticipant,
   useSession,
   useSessionContext,
+  useTracks,
   useVoiceAssistant,
+  VideoTrack,
 } from "@livekit/components-react";
 import { Button } from "@tuntun-in/ui/components/button";
 import {
@@ -16,7 +18,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@tuntun-in/ui/components/card";
-import { TokenSource } from "livekit-client";
+import { TokenSource, Track } from "livekit-client";
 import {
   CameraIcon,
   CameraOffIcon,
@@ -24,6 +26,7 @@ import {
   MicOffIcon,
   PhoneOffIcon,
   ScanEyeIcon,
+  VideoOffIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -137,6 +140,37 @@ function ReflexControls() {
   );
 }
 
+function LocalCameraPreview() {
+  const { isCameraEnabled } = useLocalParticipant();
+  // Grab the local participant's camera track (if published).
+  const cameraTracks = useTracks([Track.Source.Camera], {
+    onlySubscribed: false,
+  });
+  const localCameraTrack = cameraTracks.find(
+    (track) => track.participant.isLocal
+  );
+
+  if (!(isCameraEnabled && localCameraTrack?.publication)) {
+    return (
+      <div className="flex aspect-video w-full items-center justify-center rounded-lg border bg-muted">
+        <div className="flex flex-col items-center gap-2 text-muted-foreground">
+          <VideoOffIcon className="size-8" />
+          <span className="text-sm">Camera is off</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      <VideoTrack
+        className="aspect-video w-full object-cover"
+        trackRef={localCameraTrack}
+      />
+    </div>
+  );
+}
+
 function ReflexSessionInner() {
   const { state: agentState } = useVoiceAssistant();
 
@@ -163,6 +197,18 @@ function ReflexSessionInner() {
             </div>
             {renderStatusPill(agentState)}
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Camera Preview</CardTitle>
+          <CardDescription>
+            This is what the agent sees from your chest-mounted camera.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LocalCameraPreview />
         </CardContent>
       </Card>
 
