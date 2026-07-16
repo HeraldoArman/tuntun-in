@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Tuntun.In AI mobility companion agent"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-    "livekit-agents[google]~=1.6",
+    "livekit-agents[codecs,google,images]~=1.6",
     "deepagents>=0.6.12,<1.0.0",
     "langchain-google-genai>=4.2.6,<5.0.0",
     "convex>=0.7.0",
