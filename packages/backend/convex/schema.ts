@@ -19,13 +19,25 @@ import { v } from "convex/values";
 export default defineSchema({
   userProfiles: defineTable({
     authUserId: v.string(), // Better Auth user id
+    email: v.optional(v.string()), // denormalized from Better Auth for lookups
     role: v.union(v.literal("blind_user"), v.literal("guardian")),
     fullName: v.string(),
     whatsappNumber: v.optional(v.string()), // used for Overwatch link
 
     // Only set when role === "blind_user". 1-on-1 guardian link.
     guardianProfileId: v.optional(v.id("userProfiles")),
-  }).index("by_authUserId", ["authUserId"]),
+  })
+    .index("by_authUserId", ["authUserId"])
+    .index("by_email", ["email"]),
+
+  // Guardian ↔ Blind User link (a guardian can watch multiple blind users)
+  guardianLinks: defineTable({
+    guardianProfileId: v.id("userProfiles"),
+    blindUserProfileId: v.id("userProfiles"),
+    createdAt: v.number(),
+  })
+    .index("by_guardianProfileId", ["guardianProfileId"])
+    .index("by_blindUserProfileId", ["blindUserProfileId"]),
 
   // Live Crowdsourced Mapping
   hazardReports: defineTable({
@@ -69,5 +81,7 @@ export default defineSchema({
 
     startedAt: v.number(),
     endedAt: v.optional(v.number()),
-  }).index("by_blindUserProfileId", ["blindUserProfileId"]),
+  })
+    .index("by_blindUserProfileId", ["blindUserProfileId"])
+    .index("by_guardianProfileId", ["guardianProfileId"]),
 });
