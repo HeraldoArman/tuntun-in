@@ -14,8 +14,10 @@ import {
   useTrackToggle,
   VideoTrack,
 } from "@livekit/components-react";
+import { api } from "@tuntun-in/backend/convex/_generated/api";
 import { Button } from "@tuntun-in/ui/components/button";
 import { cn } from "@tuntun-in/ui/lib/utils";
+import { useQuery } from "convex/react";
 import type { VideoCaptureOptions } from "livekit-client";
 import { RoomEvent, Track } from "livekit-client";
 import {
@@ -384,6 +386,64 @@ function GpsPublisher() {
   return null;
 }
 
+/**
+ * Publishes the blind user's Convex profile id to the agent over the LiveKit
+ * data channel (topic "profile") so the Overwatch tool can resolve the linked
+ * guardian and send them a WhatsApp alert. Headless — renders nothing.
+ *
+ * Published once when the local participant + profile are ready, and again
+ * whenever a new participant connects (the agent joins after the user, so the
+ * first publish could be missed — re-publishing on ParticipantConnected
+ * guarantees the agent receives it).
+ */
+const PROFILE_TOPIC = "profile";
+
+function ProfilePublisher() {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const profile = useQuery(api.userProfiles.getCurrent);
+
+  useEffect(() => {
+    if (!localParticipant || profile === undefined || profile === null) {
+      return;
+    }
+    const profileId = profile._id;
+    const payload = JSON.stringify({ type: "profile", profileId });
+
+    const publish = () => {
+      localParticipant
+        .publishData(payload, { reliable: true, topic: PROFILE_TOPIC })
+        .then(() =>
+          log(
+            "ProfilePublisher — published profileId:",
+            profileId,
+            "room:",
+            room.name
+          )
+        )
+        .catch((err: unknown) =>
+          logError("ProfilePublisher — publishData failed:", err)
+        );
+    };
+
+    publish();
+
+    // Re-publish when a new participant joins so a late-arriving agent still
+    // gets the profile id.
+    const onParticipantConnected = () => {
+      log("ProfilePublisher — participant connected, re-publishing profileId");
+      publish();
+    };
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    };
+  }, [room, localParticipant, profile]);
+
+  return null;
+}
+
 function LocalCameraPreview() {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } =
     useLocalParticipant();
@@ -643,6 +703,7 @@ export function ReflexCall() {
       >
         <RoomEventLogger />
         <GpsPublisher />
+        <ProfilePublisher />
         <LocalCameraPreview />
         <RoomAudioRenderer />
       </LiveKitRoom>

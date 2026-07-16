@@ -71,13 +71,35 @@ export default defineSchema({
     endedAt: v.optional(v.number()),
   }).index("by_blindUserProfileId", ["blindUserProfileId"]),
 
-  // Overwatch Mode
+  // Overwatch Mode — emergency spectator sessions.
+  // When the Reflex agent detects critical danger, it mints a spectator
+  // LiveKit token, stores the spectator URL here, and sends it to the linked
+  // guardian via WhatsApp (go-whatsapp-web-multidevice). The guardian opens
+  // the URL to view the blind user's camera live and guide them verbally.
   overwatchSessions: defineTable({
     blindUserProfileId: v.id("userProfiles"),
     guardianProfileId: v.optional(v.id("userProfiles")),
 
     livekitRoomName: v.string(),
     status: v.union(v.literal("active"), v.literal("ended")),
+
+    // Why the agent triggered Overwatch (e.g. "detected fall",
+    // "entering excavation area"). Free text from the agent.
+    reason: v.optional(v.string()),
+
+    // Secret spectator URL the guardian opens to view the live camera.
+    // Carries a one-shot LiveKit token as a query param. Only the agent
+    // writes this; the web client reads it only inside the WhatsApp message.
+    spectatorUrl: v.optional(v.string()),
+
+    // Guardian's WhatsApp number (E.164-ish, denormalized at trigger time so
+    // the dashboard can show who was alerted even if the profile later changes.
+    guardianWhatsappNumber: v.optional(v.string()),
+
+    // Did the agent successfully push the spectator link via WhatsApp?
+    // null = send not attempted (no guardian / no GoWA configured),
+    // true = sent, false = attempted but failed.
+    whatsappSent: v.optional(v.boolean()),
 
     startedAt: v.number(),
     endedAt: v.optional(v.number()),

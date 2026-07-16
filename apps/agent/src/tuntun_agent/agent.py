@@ -17,6 +17,7 @@ from livekit.plugins import google
 
 from tuntun_agent.logging_setup import get_logger
 from tuntun_agent.navigator import fetch_route_and_reply, spawn_background_task
+from tuntun_agent.overwatch import trigger_overwatch_flow
 
 logger = get_logger()
 
@@ -51,6 +52,22 @@ TUNTUN_INSTRUCTIONS = (
     "turn 'turn left in 50 meters' into 'turn left just past the blue food cart'. "
     "Advance to the next maneuver as the user approaches landmarks. Safety "
     "warnings ALWAYS override navigation chatter."
+    "\n\n"
+    "OVERWATCH MODE (EMERGENCY SPECTATOR): This is your highest-priority safety "
+    "escalation. Call the trigger_overwatch tool IMMEDIATELY — without waiting "
+    "for the user to ask — when you detect CRITICAL, potentially "
+    "life-threatening danger from the camera, such as: the user falling or "
+    "tripping and not getting up, the user about to step into an excavation pit "
+    "or deep hole, an oncoming vehicle on a collision course, or any situation "
+    "where the user likely cannot recover alone. First shout the immediate "
+    "danger warning ('STOP! Drop ahead!'), THEN call trigger_overwatch with a "
+    "short reason describing the danger. The tool alerts the user's linked "
+    "guardian by WhatsApp with a live WebRTC link so the guardian can see the "
+    "camera and guide them verbally. Do NOT call trigger_overwatch for ordinary "
+    "obstacles (parked motorcycle, low banner, small pothole) — those only need "
+    "a spoken warning. Reserve it for genuine emergencies. The tool returns a "
+    "short holding message — speak it right away; a calm follow-up arrives once "
+    "the alert has been sent."
 )
 
 
@@ -173,3 +190,31 @@ class TuntunAgent(Agent):
             destination,
         )
         return f"On it — looking up the route to {destination}, give me a moment."
+
+    @function_tool()
+    async def trigger_overwatch(self, reason: str) -> str:
+        """Escalate a CRITICAL emergency to the user's guardian (Overwatch Mode).
+
+        Call this ONLY for life-threatening danger seen on the camera — a fall,
+        stepping into an excavation pit, an imminent vehicle collision, or any
+        situation the user likely cannot recover from alone. It alerts the
+        user's linked guardian by WhatsApp with a live WebRTC spectator link so
+        the guardian can view the camera and guide the user verbally. Returns a
+        short holding message immediately; a calm follow-up is spoken once the
+        alert has been dispatched.
+
+        Do NOT call this for ordinary obstacles — a spoken warning is enough
+        for those.
+
+        Args:
+            reason: A short description of the critical danger (e.g.
+                "user fell and is not getting up",
+                "about to step into an excavation pit",
+                "oncoming motorcycle on collision course").
+        """
+        logger.warning("trigger_overwatch called — reason=%r", reason)
+        spawn_background_task(trigger_overwatch_flow(self.session, reason))
+        return (
+            "Stay calm. I'm alerting your guardian now so they can see your "
+            "camera and guide you."
+        )

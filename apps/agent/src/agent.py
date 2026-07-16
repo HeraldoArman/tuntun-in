@@ -32,7 +32,7 @@ from livekit.agents import (  # noqa: E402
 from tuntun_agent.agent import TuntunAgent  # noqa: E402
 from tuntun_agent.convex import get_convex_client, ping_convex  # noqa: E402
 from tuntun_agent.events import (  # noqa: E402
-    attach_gps_handler,
+    attach_data_handlers,
     attach_room_event_loggers,
     attach_session_event_loggers,
 )
@@ -112,7 +112,16 @@ async def entrypoint(ctx: JobContext) -> None:
             # Deep Navigator origin: latest GPS fix published by the web client
             # via the LiveKit data channel (topic "gps"). Updated by the
             # data_received handler below; read by the navigate_to tool.
-            userdata={"lat": None, "lng": None},
+            # profileId: blind user's Convex profile id (topic "profile"), read
+            # by the Overwatch tool to resolve the linked guardian.
+            # roomName: set here so the Overwatch tool can mint a spectator
+            # token for this room without inspecting room_io internals.
+            userdata={
+                "lat": None,
+                "lng": None,
+                "profileId": None,
+                "roomName": ctx.room.name,
+            },
         )
         logger.info(
             "AgentSession created: elapsed=%.1fms "
@@ -131,14 +140,17 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as exc:
         logger.error("Failed to attach session event loggers: %s", exc, exc_info=True)
 
-    # ── Deep Navigator: receive GPS fixes from the web client ──
-    # The web client publishes {type:"gps", lat, lng} on data topic "gps".
-    # We store the latest fix on session.userdata so the navigate_to tool can
-    # use it as the route origin.
+    # ── Deep Navigator + Overwatch: receive data from the web client ──
+    # The web client publishes on two data topics:
+    #   "gps"      -> {type:"gps", lat, lng}          (Deep Navigator origin)
+    #   "profile"  -> {type:"profile", profileId}     (blind user Convex id,
+    #                used by the Overwatch tool to resolve the guardian)
+    # roomName is set here (known from ctx) so the Overwatch tool can mint a
+    # spectator token for this exact room without reaching into room_io.
     try:
-        attach_gps_handler(ctx.room, session)
+        attach_data_handlers(ctx.room, session)
     except Exception as exc:
-        logger.error("Failed to attach GPS handler: %s", exc, exc_info=True)
+        logger.error("Failed to attach data handlers: %s", exc, exc_info=True)
 
     # ── Configure room I/O ──
     logger.info(

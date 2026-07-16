@@ -24,4 +24,31 @@ services:
     env_file:
       - path: apps/agent/.env
         required: false
+    environment:
+      # GoWA (WhatsApp) lives in the same compose network as the agent.
+      # Override per-host: the device id still comes from apps/agent/.env.
+      - GOWA_BASE_URL=http://whatsapp:3000
     restart: unless-stopped
+    depends_on:
+      - whatsapp
+
+  # GoWA — go-whatsapp-web-multidevice REST API for Overwatch WhatsApp alerts.
+  # Outbound only (the agent POSTs /send/message); no webhook configured.
+  # On first run, scan the QR at http://localhost:8080/app/login to link a
+  # device, then set GOWA_DEVICE_ID in apps/agent/.env to that number's JID.
+  whatsapp:
+    image: aldinokemal2104/go-whatsapp-web-multidevice:latest
+    container_name: tuntun-whatsapp
+    ports:
+      - "8080:3000"
+    command:
+      - rest
+      - --port=3000
+    environment:
+      - PORT=3000
+    volumes:
+      - whatsapp-data:/app/stores
+    restart: unless-stopped
+
+volumes:
+  whatsapp-data:

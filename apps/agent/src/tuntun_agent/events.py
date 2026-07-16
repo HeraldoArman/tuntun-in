@@ -1,9 +1,13 @@
-"""Verbose LiveKit event loggers + GPS data handler.
+"""Verbose LiveKit event loggers + data-channel handlers.
 
 Every participant connect/disconnect, track publish/subscribe/fail, connection
 state change, user/agent state transition, speech creation, transcription, and
 per-turn metrics report is logged so latency breakdowns and media failures are
 visible during development and production.
+
+Data-channel handlers store the latest GPS fix (Deep Navigator origin) and the
+blind user's Convex profile id (Overwatch guardian resolution) on
+session.userdata.
 """
 
 from __future__ import annotations
@@ -117,11 +121,18 @@ def attach_session_event_loggers(session: AgentSession) -> None:
         logger.error("[SESSION-EVENT] error — %s", ev)
 
 
-def attach_gps_handler(room: Any, session: AgentSession) -> None:
-    """Listen for GPS data packets from the web client and store the latest
-    fix on session.userdata. Packets are JSON: {"type":"gps","lat":..,"lng":..}
-    on topic "gps". Failures are logged and ignored — GPS is best-effort."""
-    logger.info("Attaching GPS data handler to room: %s", room.name)
+def attach_data_handlers(room: Any, session: AgentSession) -> None:
+    """Listen for data packets from the web client and store them on
+    session.userdata. Two topics, both best-effort (failures logged + ignored):
+
+    - topic "gps":   {"type":"gps","lat":..,"lng":..}  -> userdata["lat"/"lng"]
+      Latest GPS fix, used by the Deep Navigator as the route origin.
+
+    - topic "profile": {"type":"profile","profileId":"<convex id>"} -> userdata["profileId"]
+      The blind user's Convex profile id, published once on connect. Used by
+      the Overwatch tool to resolve the linked guardian for the WhatsApp alert.
+    """
+    logger.info("Attaching data handlers to room: %s", room.name)
 
     @room.on("data_received")
     def on_data_received(data_packet):
@@ -132,23 +143,40 @@ def attach_gps_handler(room: Any, session: AgentSession) -> None:
                 payload_str = payload.decode("utf-8", errors="replace")
             else:
                 payload_str = str(payload)
-            if topic != "gps":
-                return
-            parsed = json.loads(payload_str)
-            if parsed.get("type") != "gps":
-                return
-            lat = parsed.get("lat")
-            lng = parsed.get("lng")
-            if lat is None or lng is None:
-                logger.warning("GPS packet missing lat/lng: %r", parsed)
-                return
+
             userdata = session.userdata
-            if isinstance(userdata, dict):
+            if not isinstance(userdata, dict):
+                return
+
+            if topic == "gps":
+                parsed = json.loads(payload_str)
+                if parsed.get("type") != "gps":
+                    return
+                lat = parsed.get("lat")
+                lng = parsed.get("lng")
+                if lat is None or lng is None:
+                    logger.warning("GPS packet missing lat/lng: %r", parsed)
+                    return
                 userdata["lat"] = float(lat)
                 userdata["lng"] = float(lng)
-            logger.info("[GPS] fix stored: lat=%.6f lng=%.6f", float(lat), float(lng))
+                logger.info(
+                    "[GPS] fix stored: lat=%.6f lng=%.6f", float(lat), float(lng)
+                )
+                return
+
+            if topic == "profile":
+                parsed = json.loads(payload_str)
+                if parsed.get("type") != "profile":
+                    return
+                profile_id = parsed.get("profileId")
+                if not profile_id:
+                    logger.warning("Profile packet missing profileId: %r", parsed)
+                    return
+                userdata["profileId"] = str(profile_id)
+                logger.info("[PROFILE] blind user profile id stored: %s", profile_id)
+                return
         except Exception as exc:
-            logger.error("Failed to handle GPS data packet: %s", exc, exc_info=True)
+            logger.error("Failed to handle data packet: %s", exc, exc_info=True)
 
 
 def attach_room_event_loggers(room: Any) -> None:
