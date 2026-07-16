@@ -91,6 +91,17 @@ TUNTUN_INSTRUCTIONS = (
     "hazard twice in one walk — report each distinct hazard once. Do not report "
     "moving or temporary things (parked motorcycles, people, vendors' carts) — "
     "only fixed damaged infrastructure worth mapping."
+    "\n\n"
+    "MANUAL HAZARD ENTRY (USER-DRIVEN, SPEAKS): When the user EXPLICITLY asks "
+    "you to add, log, report, save, or record a hazard — including 'just for "
+    "testing', 'I want to see if it works', 'add this now into the hazard', or "
+    "'can you report this' — call the report_hazard_manual tool with the user's "
+    "own words as the description. Do NOT refuse, do NOT second-guess whether "
+    "it counts as a hazard, and do NOT filter by type. The user is intentionally "
+    "driving the report (often to test the system), so honor it directly. "
+    "Unlike the silent auto-mapping above, this tool SPEAKS a confirmation — "
+    "that feedback is the whole point. Never use report_hazard_manual for your "
+    "own automatic detections; keep auto-mapping silent via report_road_hazard."
 )
 
 
@@ -291,6 +302,68 @@ class TuntunAgent(Agent):
         )
         # Internal-only ack — the instructions forbid speaking this aloud.
         return "Hazard reported to the map."
+
+    @function_tool()
+    async def report_hazard_manual(
+        self, description: str, location_description: str = "unknown"
+    ) -> str:
+        """Log a hazard to the crowdsourced map at the user's EXPLICIT request.
+
+        Call this whenever the user EXPLICITLY asks to add, log, report, save,
+        or record a hazard — including phrases like "just for testing", "I want
+        to see if it works", "add this now into the hazard", "can you report
+        this". Do NOT refuse, second-guess, or filter by hazard type — the user
+        is intentionally driving the report (often to test the system). Use the
+        user's own words as the description. This snapshots the current camera
+        frame + GPS and stores a hazard report.
+
+        Unlike the silent auto-mapping (report_road_hazard), this SPEAKS a
+        confirmation so the user knows it was logged — that feedback is the
+        point when testing.
+
+        Args:
+            description: What the user asked to add, in their words (e.g.
+                "a big crack in the road", "a pile of bricks on the sidewalk",
+                or anything at all for testing).
+            location_description: Where — street name, intersection, or nearest
+                landmark if known. Pass "unknown" if not.
+        """
+        logger.info(
+            "TOOL report_hazard_manual ENTER — description=%r location=%r "
+            "pid=%d",
+            description,
+            location_description,
+            os.getpid(),
+        )
+        userdata = self.session.userdata
+        lat = userdata.get("lat") if isinstance(userdata, dict) else None
+        lng = userdata.get("lng") if isinstance(userdata, dict) else None
+        if lat is None or lng is None:
+            logger.info(
+                "report_hazard_manual: no GPS yet — proceeding (flow will skip "
+                "without a fix)"
+            )
+        # Await so we can confirm success/failure to the user (testing needs
+        # real feedback, not a fire-and-forget holding message).
+        report_id = await report_hazard_flow(
+            self.session, description, location_description
+        )
+        if report_id:
+            logger.info(
+                "report_hazard_manual: stored — reportId=%s", report_id
+            )
+            return (
+                f"Done — I added that to the hazard map. Report id {report_id}."
+            )
+        logger.warning(
+            "report_hazard_manual: report_hazard_flow returned None — check "
+            "Crowdsource logs (missing GPS / profileId / CONVEX_SERVICE_SECRET?)"
+        )
+        return (
+            "I tried to add it, but it didn't save — I need your location and "
+            "a configured upload key. Make sure location access is on, and ask "
+            "the owner to set the Convex service secret."
+        )
 
     @function_tool()
     async def reroute_around_hazards(self, destination: str) -> str:

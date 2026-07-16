@@ -152,9 +152,14 @@ async def report_hazard_flow(
     session: AgentSession,
     description: str,
     location_description: str,
-) -> None:
-    """Background task: snapshot the camera, upload it, and insert a silent
-    crowdsourced hazard report. Never speaks to the user. Best-effort."""
+) -> str | None:
+    """Snapshot the camera, upload it, and insert a crowdsourced hazard report.
+
+    Returns the new report id (str) on success, or None on any failure / missing
+    prerequisite (no GPS, no profileId, no Convex secret). Best-effort: never
+    raises. Usually fire-and-forget (the silent auto-mapping tool ignores the
+    return); the manual testing tool awaits it to confirm to the user.
+    """
     t0 = time.monotonic()
     logger.info(
         "Crowdsource flow start — description=%r location=%r",
@@ -174,18 +179,18 @@ async def report_hazard_flow(
 
     if not profile_id:
         logger.warning("Crowdsource: no profileId in userdata — skipping report")
-        return
+        return None
     if lat is None or lng is None:
         logger.warning(
             "Crowdsource: no GPS fix yet — skipping report (description=%r)",
             description,
         )
-        return
+        return None
 
     client = get_convex_client()
     if not client:
         logger.warning("Crowdsource: no Convex client — skipping report")
-        return
+        return None
 
     image_storage_id: str | None = None
     if frame is not None:
@@ -212,3 +217,4 @@ async def report_hazard_flow(
         report_id,
         "yes" if image_storage_id else "no",
     )
+    return report_id
