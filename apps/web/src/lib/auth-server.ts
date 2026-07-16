@@ -33,7 +33,7 @@ function isTransientNetworkError(err: unknown): boolean {
 // Retry transient network failures once before surfacing. Auth preloads are
 // SSR-only UX optimizations; the client re-fetches on hydration regardless, but
 // a thrown error here 500s the route, so a single retry absorbs the blip.
-export async function preloadAuthQuery<T>(
+export async function preloadAuthQuery(
   query: Parameters<typeof rawPreloadAuthQuery>[0]
 ) {
   try {
