@@ -8,13 +8,12 @@ import {
   LiveKitRoom,
   PreJoin,
   useLocalParticipant,
-  VideoTrack,
 } from "@livekit/components-react";
 import { Button } from "@tuntun-in/ui/components/button";
 import { Track } from "livekit-client";
 import { Mic, MicOff, PhoneOff, Video, VideoOff } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 interface TokenResponse {
   participant_token: string;
@@ -23,54 +22,72 @@ interface TokenResponse {
 
 function LocalCameraPreview() {
   const { localParticipant } = useLocalParticipant();
-  const publication = localParticipant.getTrackPublication(Track.Source.Camera);
-  const audioPub = localParticipant.getTrackPublication(
-    Track.Source.Microphone
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const camPub = useMemo(
+    () => localParticipant?.getTrackPublication(Track.Source.Camera),
+    [localParticipant]
+  );
+  const micPub = useMemo(
+    () => localParticipant?.getTrackPublication(Track.Source.Microphone),
+    [localParticipant]
   );
 
-  const [micEnabled, setMicEnabled] = useState(audioPub?.isMuted === false);
-  const [camEnabled, setCamEnabled] = useState(publication?.isMuted === false);
+  const camEnabled = camPub?.isMuted === false;
+  const micEnabled = micPub?.isMuted === false;
+  const mediaStreamTrack = camPub?.videoTrack?.mediaStreamTrack ?? null;
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      const camPub = localParticipant.getTrackPublication(Track.Source.Camera);
-      const micPub = localParticipant.getTrackPublication(
-        Track.Source.Microphone
-      );
-      setCamEnabled(camPub?.isMuted === false);
-      setMicEnabled(micPub?.isMuted === false);
-    }, 300);
-    return () => clearInterval(interval);
-  }, [localParticipant]);
+    const videoEl = videoRef.current;
+    if (!(videoEl && mediaStreamTrack)) {
+      return;
+    }
+
+    const stream = new MediaStream([mediaStreamTrack]);
+    videoEl.srcObject = stream;
+    videoEl
+      .play()
+      .catch((error) => console.error("Failed to play local video:", error));
+
+    return () => {
+      videoEl.srcObject = null;
+    };
+  }, [mediaStreamTrack]);
 
   const toggleMic = async () => {
+    if (!localParticipant) {
+      return;
+    }
     await localParticipant.setMicrophoneEnabled(!micEnabled);
   };
+
   const toggleCam = async () => {
+    if (!localParticipant) {
+      return;
+    }
     await localParticipant.setCameraEnabled(!camEnabled);
   };
 
   return (
-    <div className="relative flex-1 bg-black">
-      <div className="absolute inset-0 flex items-center justify-center">
-        {publication?.isMuted === false && publication.videoTrack ? (
-          <VideoTrack
-            className="h-full w-full object-cover"
-            publication={publication}
-            trackRef={{
-              participant: localParticipant,
-              publication: publication ?? undefined,
-              source: Track.Source.Camera,
-            }}
-          />
-        ) : (
+    <div className="relative h-full w-full bg-black">
+      {camEnabled && mediaStreamTrack ? (
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <video
+          autoPlay
+          className="h-full w-full object-cover"
+          muted
+          playsInline
+          ref={videoRef}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center">
           <div className="flex h-24 w-24 items-center justify-center rounded-full bg-muted">
             <VideoOff className="h-10 w-10 text-muted-foreground" />
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div className="absolute right-0 bottom-6 left-0 flex items-center justify-center gap-4">
+      <div className="absolute right-0 bottom-8 left-0 flex items-center justify-center gap-4">
         <Button
           aria-label={micEnabled ? "Turn microphone off" : "Turn microphone on"}
           onClick={toggleMic}
@@ -97,7 +114,7 @@ function LocalCameraPreview() {
         </Button>
         <Button
           aria-label="End reflex session"
-          onClick={() => localParticipant.room.disconnect()}
+          onClick={() => localParticipant?.room?.disconnect()}
           size="icon"
           variant="destructive"
         >
