@@ -20,7 +20,7 @@ export default async function RootLayout({
   // to null — the client provider fetches the session itself when no token.
   let token: string | null = null;
   try {
-    token = await getToken();
+    token = (await getToken()) ?? null;
   } catch {
     token = null;
   }
