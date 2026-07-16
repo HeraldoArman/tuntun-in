@@ -31,6 +31,7 @@ export const create = mutation({
 
     return await ctx.db.insert("userProfiles", {
       authUserId: authUser._id,
+      email: authUser.email,
       role: args.role,
       fullName: args.fullName,
       whatsappNumber: args.whatsappNumber,
@@ -83,6 +84,7 @@ export const getCurrent = query({
       _id: v.id("userProfiles"),
       _creationTime: v.number(),
       authUserId: v.string(),
+      email: v.optional(v.string()),
       role: v.union(v.literal("blind_user"), v.literal("guardian")),
       fullName: v.string(),
       whatsappNumber: v.optional(v.string()),
