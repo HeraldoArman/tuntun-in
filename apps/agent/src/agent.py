@@ -12,8 +12,11 @@ Configure level via LOG_LEVEL env var (default: INFO).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import re
 import sys
 import time
 from typing import Any
@@ -22,6 +25,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import httpx  # noqa: E402
 from google.genai import types as genai_types  # noqa: E402
 from livekit.agents import (  # noqa: E402
     Agent,
@@ -29,6 +33,7 @@ from livekit.agents import (  # noqa: E402
     AgentSession,
     JobContext,
     cli,
+    function_tool,
     room_io,
 )
 from livekit.agents.metrics import RealtimeModelMetrics  # noqa: E402
@@ -172,6 +177,183 @@ def _ping_convex(client: Any, label: str = "startup") -> bool:
         return False
 
 
+# ─── Deep Navigator — Google Maps helpers ───────────────────────────────────
+# Macro-to-micro navigation: fetch the macro route from Google Maps, then let
+# the Reflex Layer (which sees the live camera) ground each maneuver in visible
+# landmarks. All calls are best-effort — failures degrade to a spoken message,
+# never crash the session. Requires GOOGLE_MAPS_API_KEY env var.
+
+_MAPS_BASE = "https://maps.googleapis.com/maps/api"
+_MAX_ROUTE_STEPS = 5
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+# Hold strong references to fire-and-forget background tasks so they are not
+# garbage-collected mid-run (ruff RUF006). Tasks self-remove on completion.
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags from a Maps instruction and collapse whitespace."""
+    return _HTML_TAG_RE.sub("", text).replace("&nbsp;", " ").strip()
+
+
+async def _geocode(api_key: str, address: str) -> tuple[float, float] | None:
+    """Geocode a free-text address to (lat, lng). Returns None on failure."""
+    url = f"{_MAPS_BASE}/geocode/json"
+    params = {"address": address, "key": api_key}
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        results = data.get("results") or []
+        if not results:
+            logger.warning(
+                "Geocode returned no results: address=%r elapsed=%.1fms status=%s",
+                address,
+                elapsed_ms,
+                data.get("status"),
+            )
+            return None
+        loc = results[0]["geometry"]["location"]
+        lat, lng = float(loc["lat"]), float(loc["lng"])
+        logger.info(
+            "Geocode success: address=%r -> (%.6f, %.6f) elapsed=%.1fms",
+            address,
+            lat,
+            lng,
+            elapsed_ms,
+        )
+        return lat, lng
+    except Exception as exc:
+        logger.error("Geocode failed: address=%r error=%s", address, exc, exc_info=True)
+        return None
+
+
+async def _directions(
+    api_key: str, origin: tuple[float, float], destination: tuple[float, float]
+) -> list[dict[str, Any]] | None:
+    """Fetch walking directions and return a compact list of step dicts.
+
+    Each step: {instruction, distance, maneuver}. Returns None on failure.
+    """
+    url = f"{_MAPS_BASE}/directions/json"
+    params = {
+        "origin": f"{origin[0]},{origin[1]}",
+        "destination": f"{destination[0]},{destination[1]}",
+        "mode": "walking",
+        "key": api_key,
+    }
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        routes = data.get("routes") or []
+        if not routes:
+            logger.warning(
+                "Directions returned no routes: elapsed=%.1fms status=%s",
+                elapsed_ms,
+                data.get("status"),
+            )
+            return None
+        steps_out: list[dict[str, Any]] = []
+        for leg in routes[0].get("legs", []):
+            for step in leg.get("steps", []):
+                steps_out.append(
+                    {
+                        "instruction": _strip_html(step.get("html_instructions", "")),
+                        "distance": (step.get("distance") or {}).get("text", ""),
+                        "maneuver": step.get("maneuver", ""),
+                    }
+                )
+                if len(steps_out) >= _MAX_ROUTE_STEPS:
+                    break
+            if len(steps_out) >= _MAX_ROUTE_STEPS:
+                break
+        logger.info(
+            "Directions success: %d steps (capped at %d) elapsed=%.1fms",
+            len(steps_out),
+            _MAX_ROUTE_STEPS,
+            elapsed_ms,
+        )
+        return steps_out
+    except Exception as exc:
+        logger.error("Directions failed: error=%s", exc, exc_info=True)
+        return None
+
+
+async def _fetch_route_and_reply(
+    session: AgentSession,
+    api_key: str,
+    origin: tuple[float, float],
+    destination: str,
+) -> None:
+    """Background task: geocode destination, fetch directions, push a
+    landmark-grounded guidance reply via generate_reply. Mirrors the design-doc
+    async-tool pattern (return fast, speak result later) to avoid dead-air."""
+    t0 = time.monotonic()
+    logger.info("Deep Navigator fetch start: destination=%r", destination)
+
+    dest_coords = await _geocode(api_key, destination)
+    if dest_coords is None:
+        await session.generate_reply(
+            instructions=(
+                f"Tell the user briefly in English that you could not find a "
+                f"place called '{destination}' on the map, and ask them to "
+                f"repeat or rephrase it. One short sentence."
+            )
+        )
+        return
+
+    steps = await _directions(api_key, origin, dest_coords)
+    if not steps:
+        await session.generate_reply(
+            instructions=(
+                f"Tell the user briefly in English that you could not compute "
+                f"a walking route to '{destination}' right now. One short "
+                f"sentence, calm tone."
+            )
+        )
+        return
+
+    first = steps[0]
+    remaining = len(steps) - 1
+    route_summary = (
+        f"First maneuver: {first['instruction']} "
+        f"(about {first['distance']}). "
+        f"{remaining} more step(s) after that."
+    )
+    steps_block = "\n".join(f"- {s['instruction']} ({s['distance']})" for s in steps)
+
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    logger.info(
+        "Deep Navigator route ready: elapsed=%.1fms first=%r",
+        elapsed_ms,
+        first["instruction"],
+    )
+
+    await session.generate_reply(
+        instructions=(
+            "You are guiding a visually impaired user and you can see their "
+            "live chest-mounted camera feed. A walking route was just fetched. "
+            f"Route to '{destination}':\n{steps_block}\n\n"
+            "Translate the FIRST maneuver into tangible, landmark-based "
+            "guidance: anchor the turn/direction to something visible in the "
+            "camera right now (a food cart, pole, sign, building color, "
+            "parked vehicle, doorway). Only fall back to the metric distance "
+            "if no usable landmark is visible. Keep it to one short, clear "
+            f"sentence in English. Example style: "
+            "'Turn left just past the blue food cart ahead.'\n\n"
+            f"Route summary for your reference: {route_summary}"
+        )
+    )
+
+
 # ─── Agent Definition ──────────────────────────────────────────────────────
 
 
@@ -237,6 +419,17 @@ class TuntunAgent(Agent):
                 "language (e.g. Bahasa Indonesia), you may switch to match them for that reply, but "
                 "always start and default to English.\n\n"
                 "CALM TONE: Be clear and reassuring, never panic-inducing. The user trusts your voice."
+                "\n\n"
+                "DEEP NAVIGATOR: When the user asks to be guided or navigate to a place (e.g. "
+                "'take me to the station', 'guide me to the nearest market'), call the "
+                "navigate_to tool with the destination. The tool returns immediately with a "
+                "holding message — speak that right away so there is no silence. The actual "
+                "route arrives as a follow-up. Once you have a route, ground EACH maneuver in "
+                "what the camera shows right now (food carts, signs, poles, building colors, "
+                "parked vehicles, doorways) before stating the abstract metric distance — "
+                "turn 'turn left in 50 meters' into 'turn left just past the blue food cart'. "
+                "Advance to the next maneuver as the user approaches landmarks. Safety "
+                "warnings ALWAYS override navigation chatter."
             ),
             llm=llm,
         )
@@ -266,6 +459,59 @@ class TuntunAgent(Agent):
     async def on_exit(self) -> None:
         """Called when agent is leaving the room."""
         logger.info("TuntunAgent.on_exit — agent leaving room")
+
+    @function_tool()
+    async def navigate_to(self, destination: str) -> str:
+        """Called when the user asks to be guided or navigated to a place.
+        Fetches a walking route from Google Maps and pushes landmark-based
+        guidance as a follow-up reply. Returns a short holding message
+        immediately so the user does not hear silence while the route is
+        being fetched.
+
+        Args:
+            destination: The place the user wants to go, as free text
+                (e.g. "the train station", "nearest market", "Jl. Sudirman 10").
+        """
+        api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+        if not api_key:
+            logger.warning(
+                "navigate_to: GOOGLE_MAPS_API_KEY not set — cannot fetch routes"
+            )
+            return (
+                "I can't fetch maps right now — navigation is not configured. "
+                "Please tell the owner to set a Google Maps API key."
+            )
+
+        userdata = self.session.userdata
+        lat = userdata.get("lat") if isinstance(userdata, dict) else None
+        lng = userdata.get("lng") if isinstance(userdata, dict) else None
+        if lat is None or lng is None:
+            logger.info("navigate_to: no GPS origin yet — destination=%r", destination)
+            return (
+                "I need your location to route you. Please allow location "
+                "access in the browser so I can guide you."
+            )
+
+        origin = (float(lat), float(lng))
+        logger.info(
+            "navigate_to: dispatching background route fetch — destination=%r "
+            "origin=(%.6f, %.6f)",
+            destination,
+            origin[0],
+            origin[1],
+        )
+        # Return fast with a holding message; speak the real route once fetched.
+        task = asyncio.create_task(
+            _fetch_route_and_reply(self.session, api_key, origin, destination)
+        )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        logger.info(
+            "navigate_to: background task created id=%s destination=%r",
+            id(task),
+            destination,
+        )
+        return f"On it — looking up the route to {destination}, give me a moment."
 
 
 # ─── Session Event Loggers ──────────────────────────────────────────────────
@@ -350,6 +596,40 @@ def _attach_session_event_loggers(session: AgentSession) -> None:
 
 
 # ─── Server + Session Handler ──────────────────────────────────────────────
+
+
+def _attach_gps_handler(room: Any, session: AgentSession) -> None:
+    """Listen for GPS data packets from the web client and store the latest
+    fix on session.userdata. Packets are JSON: {"type":"gps","lat":..,"lng":..}
+    on topic "gps". Failures are logged and ignored — GPS is best-effort."""
+    logger.info("Attaching GPS data handler to room: %s", room.name)
+
+    @room.on("data_received")
+    def on_data_received(data_packet):
+        try:
+            topic = getattr(data_packet, "topic", None)
+            payload = data_packet.data
+            if isinstance(payload, (bytes, bytearray)):
+                payload_str = payload.decode("utf-8", errors="replace")
+            else:
+                payload_str = str(payload)
+            if topic != "gps":
+                return
+            parsed = json.loads(payload_str)
+            if parsed.get("type") != "gps":
+                return
+            lat = parsed.get("lat")
+            lng = parsed.get("lng")
+            if lat is None or lng is None:
+                logger.warning("GPS packet missing lat/lng: %r", parsed)
+                return
+            userdata = session.userdata
+            if isinstance(userdata, dict):
+                userdata["lat"] = float(lat)
+                userdata["lng"] = float(lng)
+            logger.info("[GPS] fix stored: lat=%.6f lng=%.6f", float(lat), float(lng))
+        except Exception as exc:
+            logger.error("Failed to handle GPS data packet: %s", exc, exc_info=True)
 
 
 def _attach_room_event_loggers(room: Any) -> None:
@@ -512,6 +792,10 @@ async def entrypoint(ctx: JobContext) -> None:
                     "preemptive_tts": True,
                 },
             },
+            # Deep Navigator origin: latest GPS fix published by the web client
+            # via the LiveKit data channel (topic "gps"). Updated by the
+            # data_received handler below; read by the navigate_to tool.
+            userdata={"lat": None, "lng": None},
         )
         logger.info(
             "AgentSession created: elapsed=%.1fms "
@@ -529,6 +813,15 @@ async def entrypoint(ctx: JobContext) -> None:
         _attach_session_event_loggers(session)
     except Exception as exc:
         logger.error("Failed to attach session event loggers: %s", exc, exc_info=True)
+
+    # ── Deep Navigator: receive GPS fixes from the web client ──
+    # The web client publishes {type:"gps", lat, lng} on data topic "gps".
+    # We store the latest fix on session.userdata so the navigate_to tool can
+    # use it as the route origin.
+    try:
+        _attach_gps_handler(ctx.room, session)
+    except Exception as exc:
+        logger.error("Failed to attach GPS handler: %s", exc, exc_info=True)
 
     # ── Configure room I/O ──
     logger.info(

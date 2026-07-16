@@ -266,6 +266,112 @@ function RoomEventLogger() {
   return null;
 }
 
+/**
+ * Publishes the device GPS position to the agent over the LiveKit data
+ * channel (topic "gps") so Deep Navigator can use it as the route origin.
+ * Headless — renders nothing. Best-effort: permission denial or missing
+ * geolocation is logged and the agent will ask the user to share location.
+ *
+ * Throttled to one fix per `GPS_PUBLISH_MS` to avoid flooding the data
+ * channel. Uses watchPosition for live updates, with a getCurrentPosition
+ * fallback for browsers that misbehave with watch.
+ */
+const GPS_PUBLISH_MS = 5000;
+const GPS_TOPIC = "gps";
+
+function GpsPublisher() {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      logError("Geolocation API unavailable — Deep Navigator origin disabled");
+      return;
+    }
+    if (!localParticipant) {
+      log("GpsPublisher — no localParticipant yet, skipping");
+      return;
+    }
+
+    log(
+      "GpsPublisher mounted — room:",
+      room.name || "(connecting)",
+      "watching position, publish every",
+      GPS_PUBLISH_MS,
+      "ms"
+    );
+
+    let lastPublished = 0;
+    let watchId: number | null = null;
+
+    const publishFix = (lat: number, lng: number, accuracy?: number) => {
+      const now = Date.now();
+      if (now - lastPublished < GPS_PUBLISH_MS) {
+        log(
+          "GpsPublisher — throttle skip (too soon since last publish):",
+          now - lastPublished,
+          "ms"
+        );
+        return;
+      }
+      lastPublished = now;
+      const payload = JSON.stringify({ type: "gps", lat, lng });
+      localParticipant
+        .publishData(payload, { reliable: true, topic: GPS_TOPIC })
+        .then(() =>
+          log(
+            "GpsPublisher — published gps fix: lat=",
+            lat,
+            "lng=",
+            lng,
+            "accuracy=",
+            accuracy ?? "n/a"
+          )
+        )
+        .catch((err: unknown) =>
+          logError("GpsPublisher — publishData failed:", err)
+        );
+    };
+
+    const onSuccess = (pos: GeolocationPosition) => {
+      publishFix(
+        pos.coords.latitude,
+        pos.coords.longitude,
+        pos.coords.accuracy
+      );
+    };
+    const onError = (err: GeolocationPositionError) => {
+      logError(
+        "GpsPublisher — geolocation error — code:",
+        err.code,
+        "message:",
+        err.message,
+        "(1=permission denied, 2=unavailable, 3=timeout)"
+      );
+    };
+
+    try {
+      watchId = navigator.geolocation.watchPosition(onSuccess, onError, {
+        enableHighAccuracy: true,
+        maximumAge: GPS_PUBLISH_MS,
+        timeout: 15_000,
+      });
+      log("GpsPublisher — watchPosition started, id:", watchId);
+    } catch (err) {
+      logError("GpsPublisher — watchPosition threw:", err);
+    }
+
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        log("GpsPublisher — watchPosition cleared, id:", watchId);
+      }
+    };
+  }, [room, localParticipant]);
+
+  return null;
+}
+
 function LocalCameraPreview() {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } =
     useLocalParticipant();
@@ -452,6 +558,7 @@ export function ReflexCall() {
         video={REAR_CAMERA_CAPTURE}
       >
         <RoomEventLogger />
+        <GpsPublisher />
         <LocalCameraPreview />
         <RoomAudioRenderer />
       </LiveKitRoom>
