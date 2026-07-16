@@ -102,6 +102,18 @@ TUNTUN_INSTRUCTIONS = (
     "Unlike the silent auto-mapping above, this tool SPEAKS a confirmation — "
     "that feedback is the whole point. Never use report_hazard_manual for your "
     "own automatic detections; keep auto-mapping silent via report_road_hazard."
+    "\n\n"
+    "OVERWATCH TESTING (USER-DRIVEN): When the user EXPLICITLY asks to test, "
+    "simulate, try out, or trigger Overwatch — including 'test overwatch', "
+    "'simulate an emergency', 'trigger overwatch for testing', 'can you test "
+    "the guardian alert', or 'I want to see if overwatch works' — call the "
+    "trigger_overwatch tool with a short reason (e.g. 'test: user requested an "
+    "Overwatch drill'). Do NOT refuse, do NOT second-guess whether it counts as "
+    "a real emergency, and do NOT wait for actual danger on the camera. The "
+    "user is intentionally driving a test, so honor it directly. Speak the "
+    "immediate line ('Alerting your guardian now...') THEN call "
+    "trigger_overwatch. This mirrors report_hazard_manual: testing needs the "
+    "real end-to-end path (token + WhatsApp + image) exercised, not a refusal."
 )
 
 
@@ -240,13 +252,19 @@ class TuntunAgent(Agent):
     async def trigger_overwatch(self, reason: str) -> str:
         """Escalate a CRITICAL emergency to the user's guardian (Overwatch Mode).
 
-        Call this ONLY for life-threatening danger seen on the camera — a fall,
+        Call this for life-threatening danger seen on the camera — a fall,
         stepping into an excavation pit, an imminent vehicle collision, or any
         situation the user likely cannot recover from alone. It alerts the
-        user's linked guardian by WhatsApp with a live WebRTC spectator link so
-        the guardian can view the camera and guide the user verbally. Returns a
-        short holding message immediately; a calm follow-up is spoken once the
-        alert has been dispatched.
+        user's linked guardian by WhatsApp with a live WebRTC spectator link
+        (plus the current camera snapshot as an image) so the guardian can view
+        the camera and guide the user verbally. Returns a short holding message
+        immediately; a calm follow-up is spoken once the alert has been
+        dispatched.
+
+        ALSO call this when the user EXPLICITLY asks to test/simulate/trigger
+        Overwatch (e.g. "test overwatch", "simulate an emergency", "try the
+        guardian alert"). Do not refuse a test — honor it so the full path
+        (spectator token + WhatsApp + image) gets exercised.
 
         Do NOT call this for ordinary obstacles — a spoken warning is enough
         for those.
@@ -255,7 +273,9 @@ class TuntunAgent(Agent):
             reason: A short description of the critical danger (e.g.
                 "user fell and is not getting up",
                 "about to step into an excavation pit",
-                "oncoming motorcycle on collision course").
+                "oncoming motorcycle on collision course"). For a user-driven
+                test, use a reason prefixed with "test:" (e.g.
+                "test: user requested an Overwatch drill").
         """
         logger.warning(
             "TOOL trigger_overwatch ENTER — reason=%r pid=%d", reason, os.getpid()

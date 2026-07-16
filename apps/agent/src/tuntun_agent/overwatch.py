@@ -30,12 +30,15 @@ from livekit import api as livekit_api
 from livekit.agents import AgentSession
 
 from tuntun_agent.convex import get_convex_client
+from tuntun_agent.crowdsource import _encode_jpeg
 from tuntun_agent.logging_setup import get_logger
 
 logger = get_logger()
 
 _SPECTATOR_TOKEN_TTL = datetime.timedelta(hours=1)
 _WHATSAPP_TIMEOUT = 15.0
+# Image send can be slower (multipart upload of a JPEG); give it more room.
+_WHATSAPP_IMAGE_TIMEOUT = 30.0
 
 
 def _normalize_phone(phone: str) -> str:
@@ -170,6 +173,77 @@ async def send_whatsapp(phone: str, message: str) -> bool:
         return False
 
 
+async def send_whatsapp_image(phone: str, jpeg_bytes: bytes, caption: str) -> bool:
+    """Send a WhatsApp image with a caption via GoWA ``/send/image``.
+
+    One message carries the camera snapshot + the alert text (caption) with the
+    spectator link, so the guardian sees the danger and the live-view link in a
+    single chat bubble. Best-effort — returns True on success, False on any
+    failure or missing config. Never raises.
+
+    GoWA accepts either a binary ``image`` part or an ``image_url`` field; we
+    upload the JPEG bytes directly (multipart/form-data) so no public hosting
+    of the snapshot is needed.
+    """
+    base_url = os.environ.get("GOWA_BASE_URL", "").rstrip("/")
+    device_id = os.environ.get("GOWA_DEVICE_ID", "")
+    if not base_url or not device_id:
+        logger.warning(
+            "Overwatch: GoWA not configured (GOWA_BASE_URL/GOWA_DEVICE_ID) — "
+            "skipping WhatsApp image send"
+        )
+        return False
+
+    phone_clean = _normalize_phone(phone)
+    url = f"{base_url}/send/image"
+    headers: dict[str, str] = {"X-Device-Id": device_id}
+    # Optional basic auth if the GoWA instance is secured (same as text send).
+    username = os.environ.get("GOWA_USERNAME", "")
+    password = os.environ.get("GOWA_PASSWORD", "")
+    if username and password:
+        import base64
+
+        creds = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers["Authorization"] = f"Basic {creds}"
+
+    # multipart/form-data: phone + caption as form fields, image as binary file.
+    data = {
+        "phone": phone_clean,
+        "caption": caption,
+        # WhatsApp compresses server-side anyway; send the JPEG as-is.
+        "compress": "false",
+    }
+    files = {"image": ("overwatch-snapshot.jpg", jpeg_bytes, "image/jpeg")}
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=_WHATSAPP_IMAGE_TIMEOUT) as client:
+            resp = await client.post(url, headers=headers, data=data, files=files)
+            resp.raise_for_status()
+            data_resp = resp.json()
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        logger.info(
+            "Overwatch: WhatsApp image sent — to=%s code=%s jpeg=%d bytes "
+            "elapsed=%.1fms",
+            phone_clean,
+            data_resp.get("code"),
+            len(jpeg_bytes),
+            elapsed_ms,
+        )
+        return True
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        logger.error(
+            "Overwatch: WhatsApp image send failed — to=%s jpeg=%d bytes "
+            "elapsed=%.1fms error=%s",
+            phone_clean,
+            len(jpeg_bytes),
+            elapsed_ms,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
 async def _create_session(
     profile_id: str, room_name: str, spectator_url: str, reason: str
 ) -> dict[str, Any] | None:
@@ -295,22 +369,35 @@ async def trigger_overwatch_flow(session: AgentSession, reason: str) -> None:
     session_id = (session_info or {}).get("sessionId")
 
     whatsapp_sent = False
+    whatsapp_image_sent = False
     if guardian_number:
         message = (
             f"🚨 Tuntun.In Overwatch alert — {guardian_name or 'your linked user'} "
             f"may be in danger ({reason}). View their live camera and guide them "
             f"here: {spectator_url}"
         )
-        whatsapp_sent = await send_whatsapp(guardian_number, message)
+        # Attach the current camera frame as an image so the guardian sees the
+        # danger immediately, not just the link. GoWA /send/image carries the
+        # alert text as the caption — one message, image + link. Falls back to
+        # text-only /send/message if there is no buffered frame yet.
+        frame = userdata.get("latest_frame")
+        jpeg = _encode_jpeg(frame) if frame is not None else None
+        if jpeg:
+            whatsapp_sent = await send_whatsapp_image(guardian_number, jpeg, message)
+            whatsapp_image_sent = whatsapp_sent
+        else:
+            logger.info("Overwatch: no frame buffered yet — sending text-only WhatsApp")
+            whatsapp_sent = await send_whatsapp(guardian_number, message)
         if session_id:
             await _mark_whatsapp_sent(str(session_id), whatsapp_sent)
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     logger.info(
-        "Overwatch flow done — elapsed=%.1fms guardian=%s whatsappSent=%s",
+        "Overwatch flow done — elapsed=%.1fms guardian=%s whatsappSent=%s image=%s",
         elapsed_ms,
         "yes" if guardian_number else "no",
         whatsapp_sent,
+        whatsapp_image_sent,
     )
 
     # Speak a calm, situation-aware follow-up. The immediate danger warning was
