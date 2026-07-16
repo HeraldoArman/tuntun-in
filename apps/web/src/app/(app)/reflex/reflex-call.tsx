@@ -739,8 +739,21 @@ function ThinkingIndicator() {
 }
 
 function LocalCameraPreview() {
-  const { localParticipant, isMicrophoneEnabled, isCameraEnabled } =
-    useLocalParticipant();
+  // `cameraTrack` is the reactive publication from the hook's subscription
+  // emission — it is set in the SAME state update as `isCameraEnabled`, so the
+  // two are consistent. Do NOT re-query `localParticipant.getTrackPublication`
+  // inline: that reads the localParticipant state slot, which isn't re-driven
+  // on a camera publish (the LocalParticipant is a stable singleton, so
+  // setLocalParticipant(sameRef) is a no-op). The inline lookup then lags
+  // behind isCameraEnabled, leaving `camPub` null while `isCameraEnabled` is
+  // already true — so the render guard falls through to "Camera is off" even
+  // though the track is published. Use the hook's `cameraTrack` instead.
+  const {
+    localParticipant,
+    isMicrophoneEnabled,
+    isCameraEnabled,
+    cameraTrack: camPub,
+  } = useLocalParticipant();
 
   const { buttonProps: micButtonProps } = useTrackToggle({
     source: Track.Source.Microphone,
@@ -757,21 +770,6 @@ function LocalCameraPreview() {
     disconnectButtonClassName,
     "size-12 rounded-full [&_svg]:size-5"
   );
-
-  const camPub = localParticipant?.getTrackPublication(Track.Source.Camera);
-
-  useEffect(() => {
-    log(
-      "LocalCameraPreview state — micEnabled:",
-      isMicrophoneEnabled,
-      "camEnabled:",
-      isCameraEnabled,
-      "hasCamPub:",
-      Boolean(camPub),
-      "camPubSid:",
-      camPub?.trackSid
-    );
-  }, [isMicrophoneEnabled, isCameraEnabled, camPub]);
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-black">
