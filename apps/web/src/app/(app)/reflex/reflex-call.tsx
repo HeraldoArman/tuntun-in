@@ -17,7 +17,7 @@ import {
 import { api } from "@tuntun-in/backend/convex/_generated/api";
 import { Button } from "@tuntun-in/ui/components/button";
 import { cn } from "@tuntun-in/ui/lib/utils";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import type { VideoCaptureOptions } from "livekit-client";
 import { RoomEvent, Track } from "livekit-client";
 import {
@@ -609,6 +609,13 @@ export function ReflexCall() {
   const [tokenResponse, setTokenResponse] = useState<TokenResponse | null>(
     null
   );
+  // ponytail: Overwatch is auto-active for the blind user's whole Reflex
+  // session — the Reflex room IS the Overwatch room, so the guardian (and the
+  // agent's spectator-link minter) can spectate the live chest camera at any
+  // time without a manual start. Ended on disconnect.
+  const startOverwatch = useMutation(api.overwatch.startSession);
+  const endOverwatch = useMutation(api.overwatch.endSession);
+  const overwatchSessionId = useRef<string | null>(null);
 
   const handlePreJoinSubmit = async (values: LocalUserChoices) => {
     const roomName = `reflex-${Date.now()}`;
@@ -650,9 +657,29 @@ export function ReflexCall() {
       data.participant_token.length
     );
     setTokenResponse(data);
+
+    // Auto-start Overwatch against this Reflex room. Best-effort: a failure
+    // here must not block the call — the agent/guardian just won't see an
+    // active session row.
+    try {
+      const id = await startOverwatch({ livekitRoomName: roomName });
+      overwatchSessionId.current = id as string;
+      log("Overwatch auto-started — sessionId:", id, "room:", roomName);
+    } catch (err) {
+      logError("Overwatch auto-start failed (non-blocking):", err);
+    }
   };
 
   const handleDisconnected = () => {
+    const id = overwatchSessionId.current;
+    overwatchSessionId.current = null;
+    if (id) {
+      endOverwatch({ sessionId: id as never })
+        .then(() => log("Overwatch session ended — sessionId:", id))
+        .catch((err: unknown) =>
+          logError("Overwatch end failed (non-blocking):", err)
+        );
+    }
     router.push("/dashboard/reflex");
   };
 

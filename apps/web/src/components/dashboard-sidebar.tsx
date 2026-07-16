@@ -16,7 +16,6 @@ import {
 import { cn } from "@tuntun-in/ui/lib/utils";
 import { useQuery } from "convex/react";
 import {
-  EyeIcon,
   LayoutDashboardIcon,
   ScanEyeIcon,
   SettingsIcon,
@@ -56,11 +55,6 @@ const blindUserNavItems = [
     icon: ScanEyeIcon,
     label: "Reflex AI",
     href: "/reflex",
-  },
-  {
-    icon: EyeIcon,
-    label: "Overwatch",
-    href: "/dashboard/overwatch",
   },
   {
     icon: SettingsIcon,

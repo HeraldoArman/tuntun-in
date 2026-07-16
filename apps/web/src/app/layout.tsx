@@ -15,7 +15,15 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const token = await getToken();
+  // ponytail: getToken() fetches the Convex site URL server-side; a transient
+  // network timeout (WSL ↔ Cloudflare) used to 500 the whole layout. Fall back
+  // to null — the client provider fetches the session itself when no token.
+  let token: string | null = null;
+  try {
+    token = await getToken();
+  } catch {
+    token = null;
+  }
   return (
     <html lang="en" suppressHydrationWarning>
       <head>

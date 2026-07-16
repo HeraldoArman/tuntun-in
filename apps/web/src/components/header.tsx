@@ -19,9 +19,14 @@ const landingMenuItems = [
 export default function Header() {
   const [menuState, setMenuState] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  // ponytail: gate auth-gated buttons on mount; ConvexBetterAuthProvider
+  // resolves session on the client, so SSR renders AuthLoading (skeleton) and
+  // the first client paint would otherwise render Unauthenticated → hydration mismatch.
+  const [mounted, setMounted] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
+    setMounted(true);
     const handleScroll = () => {
       setIsScrolled(window.scrollY > 50);
     };
@@ -112,47 +117,53 @@ export default function Header() {
               </div>
 
               <div className="flex w-full flex-col gap-3 sm:flex-row sm:gap-3 md:w-fit">
-                <AuthLoading>
+                {mounted ? (
+                  <>
+                    <AuthLoading>
+                      <Skeleton className="h-9 w-20" />
+                    </AuthLoading>
+                    <Authenticated>
+                      <Button asChild size="sm">
+                        <Link href="/dashboard">
+                          <LayoutDashboard className="size-4" />
+                          <span>Dashboard</span>
+                        </Link>
+                      </Button>
+                    </Authenticated>
+                    <Unauthenticated>
+                      <Button
+                        asChild
+                        className={cn(isScrolled && "lg:hidden")}
+                        size="sm"
+                        variant="outline"
+                      >
+                        <Link href="/login">
+                          <span>Login</span>
+                        </Link>
+                      </Button>
+                      <Button
+                        asChild
+                        className={cn(isScrolled && "lg:hidden")}
+                        size="sm"
+                      >
+                        <Link href="/register">
+                          <span>Sign Up</span>
+                        </Link>
+                      </Button>
+                      <Button
+                        asChild
+                        className={cn(isScrolled ? "lg:inline-flex" : "hidden")}
+                        size="sm"
+                      >
+                        <Link href="/register">
+                          <span>Get Started</span>
+                        </Link>
+                      </Button>
+                    </Unauthenticated>
+                  </>
+                ) : (
                   <Skeleton className="h-9 w-20" />
-                </AuthLoading>
-                <Authenticated>
-                  <Button asChild size="sm">
-                    <Link href="/dashboard">
-                      <LayoutDashboard className="size-4" />
-                      <span>Dashboard</span>
-                    </Link>
-                  </Button>
-                </Authenticated>
-                <Unauthenticated>
-                  <Button
-                    asChild
-                    className={cn(isScrolled && "lg:hidden")}
-                    size="sm"
-                    variant="outline"
-                  >
-                    <Link href="/login">
-                      <span>Login</span>
-                    </Link>
-                  </Button>
-                  <Button
-                    asChild
-                    className={cn(isScrolled && "lg:hidden")}
-                    size="sm"
-                  >
-                    <Link href="/register">
-                      <span>Sign Up</span>
-                    </Link>
-                  </Button>
-                  <Button
-                    asChild
-                    className={cn(isScrolled ? "lg:inline-flex" : "hidden")}
-                    size="sm"
-                  >
-                    <Link href="/register">
-                      <span>Get Started</span>
-                    </Link>
-                  </Button>
-                </Unauthenticated>
+                )}
               </div>
             </div>
           </div>
