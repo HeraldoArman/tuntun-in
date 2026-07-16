@@ -4,12 +4,11 @@ import { Button } from "@tuntun-in/ui/components/button";
 import { Skeleton } from "@tuntun-in/ui/components/skeleton";
 import { cn } from "@tuntun-in/ui/lib/utils";
 import { Authenticated, AuthLoading, Unauthenticated } from "convex/react";
-import { Menu, X } from "lucide-react";
+import { LayoutDashboard, Menu, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import UserMenu from "./user-menu";
 
 const landingMenuItems = [
   { name: "Features", href: "/#features" },
@@ -116,12 +115,12 @@ export default function Header() {
                   <Skeleton className="h-9 w-20" />
                 </AuthLoading>
                 <Authenticated>
-                  <Button asChild size="sm" variant="outline">
+                  <Button asChild size="sm">
                     <Link href="/dashboard">
+                      <LayoutDashboard className="size-4" />
                       <span>Dashboard</span>
                     </Link>
                   </Button>
-                  <UserMenu />
                 </Authenticated>
                 <Unauthenticated>
                   <Button
