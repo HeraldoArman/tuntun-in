@@ -17,6 +17,7 @@ design: no generate_reply, the user is never interrupted.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -60,8 +61,9 @@ async def _upload_image(client: Any, jpeg_bytes: bytes) -> str | None:
     """Generate a Convex upload URL, POST the JPEG, return the storageId.
 
     Returns None on any failure or missing secret. The ConvexClient mutation
-    call is synchronous and blocks the loop briefly; acceptable for a one-shot
-    background report. The HTTP POST is async via httpx.AsyncClient.
+    (generateUploadUrl) is synchronous, so it runs in a worker thread via
+    asyncio.to_thread to avoid blocking the event loop. The HTTP POST that
+    uploads the JPEG is async via httpx.AsyncClient.
     """
     secret = os.environ.get("CONVEX_SERVICE_SECRET", "")
     if not secret:
@@ -71,8 +73,8 @@ async def _upload_image(client: Any, jpeg_bytes: bytes) -> str | None:
         return None
 
     try:
-        upload_url = client.mutation(
-            "hazardAgent:generateUploadUrl", {"secret": secret}
+        upload_url = await asyncio.to_thread(
+            client.mutation, "hazardAgent:generateUploadUrl", {"secret": secret}
         )
     except Exception as exc:
         logger.error("Crowdsource: generateUploadUrl failed: %s", exc, exc_info=True)
@@ -107,7 +109,7 @@ async def _upload_image(client: Any, jpeg_bytes: bytes) -> str | None:
         return None
 
 
-def _create_report(
+async def _create_report(
     client: Any,
     profile_id: str,
     lat: float,
@@ -117,7 +119,11 @@ def _create_report(
     image_storage_id: str | None,
 ) -> str | None:
     """Insert a hazardReports row via hazardAgent:ingestReport. Returns the
-    report id or None on failure."""
+    report id or None on failure.
+
+    Runs the sync Convex mutation in a worker thread so it does not block the
+    event loop (and the agent's Gemini Live audio path). Best-effort.
+    """
     secret = os.environ.get("CONVEX_SERVICE_SECRET", "")
     if not secret:
         return None
@@ -132,7 +138,9 @@ def _create_report(
     if image_storage_id:
         args["imageStorageId"] = image_storage_id
     try:
-        report_id = client.mutation("hazardAgent:ingestReport", args)
+        report_id = await asyncio.to_thread(
+            client.mutation, "hazardAgent:ingestReport", args
+        )
         logger.info("Crowdsource: report stored — id=%s", report_id)
         return str(report_id) if report_id else None
     except Exception as exc:
@@ -187,7 +195,7 @@ async def report_hazard_flow(
     else:
         logger.info("Crowdsource: no frame buffered yet — storing report without image")
 
-    report_id = _create_report(
+    report_id = await _create_report(
         client,
         str(profile_id),
         float(lat),

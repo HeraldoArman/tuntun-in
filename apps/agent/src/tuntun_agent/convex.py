@@ -7,6 +7,7 @@ Each session gets its own client; no global state. Failures degrade to
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -43,7 +44,22 @@ def get_convex_client() -> Any | None:
 
 
 def ping_convex(client: Any, label: str = "startup") -> bool:
-    """Ping Convex to verify connectivity. Returns True on success."""
+    """Ping Convex to verify connectivity. Returns True on success.
+
+    Synchronous wrapper kept for non-async callers. Async callers should use
+    ``aping_convex`` so the (blocking) Convex mutation runs off the event loop.
+    """
+    return _run_ping(client, label)
+
+
+async def aping_convex(client: Any, label: str = "startup") -> bool:
+    """Async ping — runs the sync ConvexClient mutation in a worker thread so
+    it does NOT block the event loop (and the Gemini Live audio path)."""
+    return await asyncio.to_thread(_run_ping, client, label)
+
+
+def _run_ping(client: Any, label: str) -> bool:
+    """Sync implementation of the ping (shared by ping_convex / aping_convex)."""
     if not client:
         logger.debug("Convex ping skipped (no client): label=%s", label)
         return False

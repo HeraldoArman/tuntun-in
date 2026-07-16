@@ -18,6 +18,7 @@ crash the session — they just change what the agent says next.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import os
 import time
@@ -169,13 +170,16 @@ async def send_whatsapp(phone: str, message: str) -> bool:
         return False
 
 
-def _create_session(
+async def _create_session(
     profile_id: str, room_name: str, spectator_url: str, reason: str
 ) -> dict[str, Any] | None:
     """Call the Convex overwatchAgent.startForAgent mutation. Returns the
-    guardian info dict or None on failure. Synchronous (ConvexClient is sync)
-    — called from a background task, blocks the loop briefly. # ponytail: sync
-    convex call in async task; acceptable for a one-shot trigger."""
+    guardian info dict or None on failure.
+
+    The ConvexClient mutation is synchronous, so it runs in a worker thread via
+    asyncio.to_thread — it must NOT block the event loop (the agent's Gemini
+    Live audio pipeline shares this loop). Best-effort; never raises.
+    """
     secret = os.environ.get("CONVEX_SERVICE_SECRET", "")
     if not secret:
         logger.warning(
@@ -188,16 +192,16 @@ def _create_session(
         logger.warning("Overwatch: no Convex client — skipping session record")
         return None
 
+    args: dict[str, Any] = {
+        "secret": secret,
+        "blindUserProfileId": profile_id,
+        "livekitRoomName": room_name,
+        "spectatorUrl": spectator_url,
+        "reason": reason,
+    }
     try:
-        result = client.mutation(
-            "overwatchAgent:startForAgent",
-            {
-                "secret": secret,
-                "blindUserProfileId": profile_id,
-                "livekitRoomName": room_name,
-                "spectatorUrl": spectator_url,
-                "reason": reason,
-            },
+        result = await asyncio.to_thread(
+            client.mutation, "overwatchAgent:startForAgent", args
         )
         logger.info(
             "Overwatch: session created — sessionId=%s guardian=%s whatsapp=%s",
@@ -211,8 +215,12 @@ def _create_session(
         return None
 
 
-def _mark_whatsapp_sent(session_id: str, sent: bool) -> None:
-    """Record the WhatsApp delivery result on the session. Best-effort."""
+async def _mark_whatsapp_sent(session_id: str, sent: bool) -> None:
+    """Record the WhatsApp delivery result on the session. Best-effort.
+
+    Runs the sync Convex mutation in a worker thread so it does not block the
+    event loop (and the agent's audio path). Never raises.
+    """
     secret = os.environ.get("CONVEX_SERVICE_SECRET", "")
     if not secret:
         return
@@ -220,7 +228,8 @@ def _mark_whatsapp_sent(session_id: str, sent: bool) -> None:
     if not client:
         return
     try:
-        client.mutation(
+        await asyncio.to_thread(
+            client.mutation,
             "overwatchAgent:markWhatsappSent",
             {"secret": secret, "sessionId": session_id, "sent": sent},
         )
@@ -280,7 +289,7 @@ async def trigger_overwatch_flow(session: AgentSession, reason: str) -> None:
         )
         return
 
-    session_info = _create_session(profile_id, room_name, spectator_url, reason)
+    session_info = await _create_session(profile_id, room_name, spectator_url, reason)
     guardian_name = (session_info or {}).get("guardianFullName")
     guardian_number = (session_info or {}).get("guardianWhatsappNumber")
     session_id = (session_info or {}).get("sessionId")
@@ -294,7 +303,7 @@ async def trigger_overwatch_flow(session: AgentSession, reason: str) -> None:
         )
         whatsapp_sent = await send_whatsapp(guardian_number, message)
         if session_id:
-            _mark_whatsapp_sent(str(session_id), whatsapp_sent)
+            await _mark_whatsapp_sent(str(session_id), whatsapp_sent)
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     logger.info(

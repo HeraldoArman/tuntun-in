@@ -45,7 +45,7 @@ from livekit.agents import (  # noqa: E402
 )
 
 from tuntun_agent.agent import TuntunAgent  # noqa: E402
-from tuntun_agent.convex import get_convex_client, ping_convex  # noqa: E402
+from tuntun_agent.convex import aping_convex, get_convex_client  # noqa: E402
 from tuntun_agent.events import (  # noqa: E402
     attach_data_handlers,
     attach_room_event_loggers,
@@ -100,7 +100,10 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info("Setting up Convex connection...")
     client = get_convex_client()
     if client:
-        ping_convex(client, label="session_start")
+        # Use the async ping so the (blocking) ConvexClient mutation runs in a
+        # worker thread and never stalls the event loop — important because the
+        # agent's audio pipeline shares this loop.
+        await aping_convex(client, label="session_start")
     else:
         logger.warning(
             "Starting session without Convex — no DB persistence this session"

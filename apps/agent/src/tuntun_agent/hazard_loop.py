@@ -171,7 +171,16 @@ class HazardLoop:
             return
 
         hazards = self._parse(resp)
-        for h in hazards:
+        # Process highest-priority hazards first so a CRITICAL warning is never
+        # queued behind a MODERATE/LOW one returned in the same frame. This
+        # complements the non-blocking MODERATE deferral in the PriorityManager
+        # (which prevents a CRITICAL in a *later* tick from being stalled).
+        priority_rank = {
+            HazardPriority.CRITICAL: 0,
+            HazardPriority.MODERATE: 1,
+            HazardPriority.LOW: 2,
+        }
+        for h in sorted(hazards, key=lambda x: priority_rank.get(x.priority, 99)):
             await self._pm.on_hazard(h)
 
     @staticmethod

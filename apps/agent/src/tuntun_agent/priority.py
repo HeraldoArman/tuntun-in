@@ -19,8 +19,8 @@ The ``PriorityManager`` is that arbiter. It owns:
   * the 3-level interrupt policy from the design doc:
 
       CRITICAL  -> interrupt() + generate_reply SEGERA (always preempts)
-      MODERATE  -> if SPEAKING, wait for the current speech to end, then
-                   interrupt the user turn + generate_reply
+      MODERATE  -> if SPEAKING, defer (non-blocking) and speak once the
+                   current speech ends, unless a CRITICAL preempts it
       LOW       -> only speak if IDLE; otherwise skip (not time-critical)
 
 There is no native ``wait_for_speech_end`` on AgentSession, so we track the
@@ -88,10 +88,21 @@ class PriorityManager:
         self._session = session
         self._last_warned: dict[str, float] = {}
         self._livekit_state = "idle"
-        # Set when NOT speaking, cleared when speaking. lets a MODERATE hazard
-        # await the end of the current speech before interrupting.
+        # Set when NOT speaking, cleared when speaking. lets a deferred
+        # MODERATE hazard wait for the end of the current speech before firing.
         self._not_speaking = asyncio.Event()
         self._not_speaking.set()
+        # Deferred MODERATE state: when a MODERATE hazard arrives while the
+        # agent is speaking, we must NOT block the perception loop on
+        # wait_for_speech_end (that would stall the hazard loop and delay a
+        # later CRITICAL). Instead we stage it here and let a background
+        # waiter fire it once speech ends — unless a CRITICAL preempts it.
+        self._pending_moderate: Hazard | None = None
+        self._deferred_task: asyncio.Task[None] | None = None
+        # monotonic timestamp of the last CRITICAL warning actually spoken, so
+        # a deferred MODERATE can tell if a CRITICAL fired while it was waiting
+        # and drop itself instead of clobbering the life-threatening warning.
+        self._last_critical_monotonic: float = 0.0
 
     @property
     def design_state(self) -> str:
@@ -122,12 +133,21 @@ class PriorityManager:
         await self._not_speaking.wait()
 
     async def on_hazard(self, hazard: Hazard) -> None:
-        """Apply the cooldown + 3-level interrupt policy for one hazard."""
+        """Apply the cooldown + 3-level interrupt policy for one hazard.
+
+        Non-blocking: a MODERATE hazard that arrives while the agent is
+        speaking is deferred (not awaited) so the perception loop keeps
+        sampling and a later CRITICAL can preempt immediately. The deferred
+        MODERATE is cancelled if a CRITICAL arrives while it is waiting, so a
+        non-critical warning can never clobber a life-threatening one.
+        """
         key = hazard.description
         now = time.monotonic()
         if now - self._last_warned.get(key, 0.0) < _COOLDOWN:
             logger.debug(
-                "[PRIORITY] skip (cooldown) — %r priority=%s", key, hazard.priority.value
+                "[PRIORITY] skip (cooldown) — %r priority=%s",
+                key,
+                hazard.priority.value,
             )
             return
 
@@ -140,25 +160,81 @@ class PriorityManager:
         )
 
         if hazard.priority is HazardPriority.CRITICAL:
-            # Safety overrides everything — cut whatever is being said.
+            # Safety overrides everything — cut whatever is being said and
+            # cancel any deferred MODERATE so it cannot fire after us.
+            self._cancel_deferred()
+            self._last_critical_monotonic = time.monotonic()
             await self._interrupt()
             await self._speak(f"PERINGATAN SEGERA: {hazard.description}")
         elif hazard.priority is HazardPriority.MODERATE:
             if state == STATE_SPEAKING:
-                await self.wait_for_speech_end()
+                # Do NOT block the perception loop on wait_for_speech_end —
+                # that would stall the hazard loop and delay a later CRITICAL.
+                # Defer: the latest MODERATE fires once speech ends, unless a
+                # CRITICAL preempts it first.
+                self._defer_moderate(hazard)
+                return
             await self._interrupt()
             await self._speak(f"Peringatan: {hazard.description}")
         else:  # LOW
             if state == STATE_IDLE:
                 await self._speak(hazard.description)
             else:
-                logger.debug(
-                    "[PRIORITY] skip LOW (agent busy) — %r", key
-                )
+                logger.debug("[PRIORITY] skip LOW (agent busy) — %r", key)
                 # Not spoken: do NOT stamp cooldown, so it can fire once idle.
                 return
 
         self._last_warned[key] = time.monotonic()
+
+    def _defer_moderate(self, hazard: Hazard) -> None:
+        """Stage a MODERATE hazard to fire once the current speech ends.
+
+        Only one deferred waiter exists at a time; a newer MODERATE replaces an
+        older pending one (no queue buildup). The waiter runs as a background
+        task so it never blocks the caller (the hazard loop tick).
+        """
+        self._pending_moderate = hazard
+        if self._deferred_task is None or self._deferred_task.done():
+            self._deferred_task = asyncio.create_task(self._deferred_moderate_speak())
+
+    def _cancel_deferred(self) -> None:
+        """Cancel any pending deferred MODERATE (e.g. because a CRITICAL fired)."""
+        self._pending_moderate = None
+        task = self._deferred_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._deferred_task = None
+
+    async def _deferred_moderate_speak(self) -> None:
+        """Background waiter: speak the latest deferred MODERATE once the
+        current speech ends, unless a CRITICAL preempted it while waiting."""
+        started = time.monotonic()
+        try:
+            await self._not_speaking.wait()
+        except asyncio.CancelledError:
+            return
+        hazard = self._pending_moderate
+        self._pending_moderate = None
+        self._deferred_task = None
+        if hazard is None:
+            return  # cancelled by a CRITICAL
+        # A CRITICAL fired while we were waiting — never clobber it.
+        if self._last_critical_monotonic > started:
+            logger.debug(
+                "[PRIORITY] drop deferred MODERATE (CRITICAL preempted) — %r",
+                hazard.description,
+            )
+            return
+        # Re-check cooldown: another warning for the same key may have fired
+        # while we were waiting.
+        if (
+            time.monotonic() - self._last_warned.get(hazard.description, 0.0)
+            < _COOLDOWN
+        ):
+            return
+        await self._interrupt()
+        await self._speak(f"Peringatan: {hazard.description}")
+        self._last_warned[hazard.description] = time.monotonic()
 
     async def _interrupt(self) -> None:
         try:
@@ -170,9 +246,7 @@ class PriorityManager:
         try:
             await self._session.generate_reply(instructions=instructions)
         except Exception as exc:
-            logger.error(
-                "[PRIORITY] generate_reply failed: %s", exc, exc_info=True
-            )
+            logger.error("[PRIORITY] generate_reply failed: %s", exc, exc_info=True)
 
 
 def attach_priority_manager(session: AgentSession) -> PriorityManager:
