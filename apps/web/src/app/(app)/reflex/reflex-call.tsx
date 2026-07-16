@@ -1,7 +1,8 @@
 "use client";
 
-import "@livekit/components-styles/dist/general/index.css";
-import "@livekit/components-styles/dist/general/themes/default.css";
+import "@livekit/components-styles/components";
+import "@livekit/components-styles/prefabs";
+import "@livekit/components-styles/themes/default.css";
 
 import type { LocalUserChoices } from "@livekit/components-react";
 import {
