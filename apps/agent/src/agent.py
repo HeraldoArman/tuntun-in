@@ -1,9 +1,19 @@
 """
 Tuntun.In AI Mobility Companion Agent — entrypoint.
 
-Dual-brain architecture:
-- Reflex Layer: Gemini Live (instant audio-visual obstacle detection)
-- Reasoning Layer: LangChain DeepAgents (multi-step route orchestration)
+Reflex architecture:
+- Reflex Layer: Gemini Live (instant audio-visual obstacle detection).
+  Navigation uses Google Maps direct API calls (no reasoning layer).
+
+A LangChain DeepAgents reasoning layer for multi-step route orchestration is
+planned but NOT yet implemented. The navigator module calls the Google Maps
+API directly via httpx. `deepagents` remains in pyproject.toml for forward
+compatibility only.
+
+Wake word gating: the agent is gated behind the "Hey Tutu" wake word
+(openwakeword ONNX model). Until the wake word is detected, the agent stays
+silent and does not react to ambient speech — so it won't interrupt when the
+user is talking to someone else.
 
 The implementation lives in the `tuntun_agent` package. This file wires up
 logging, the AgentServer, and the per-room session handler. Logging is verbose
@@ -35,12 +45,14 @@ from tuntun_agent.events import (  # noqa: E402
     attach_data_handlers,
     attach_room_event_loggers,
     attach_session_event_loggers,
+    attach_video_frame_capture,
 )
 from tuntun_agent.logging_setup import (  # noqa: E402
     get_logger,
     log_startup_env,
     setup_logging,
 )
+from tuntun_agent.wakeword import attach_wake_word  # noqa: E402
 
 setup_logging()
 log_startup_env()
@@ -99,6 +111,12 @@ async def entrypoint(ctx: JobContext) -> None:
             # - preemptive generation: start drafting before turn fully ends
             aec_warmup_duration=0.5,
             turn_handling={
+                # MANUAL turn detection: the agent does NOT auto-react to
+                # every sound. Turns are opened explicitly by the wake word
+                # detector ("Hey Tutu") or by the proactive safety loop. This
+                # prevents the agent from interrupting when the user is
+                # talking to someone else.
+                "turn_detection": "manual",
                 "endpointing": {
                     "mode": "fixed",
                     "min_delay": 0.3,
@@ -121,11 +139,17 @@ async def entrypoint(ctx: JobContext) -> None:
                 "lng": None,
                 "profileId": None,
                 "roomName": ctx.room.name,
+                # Latest chest-camera VideoFrame + its rtc.VideoStream, kept by
+                # attach_video_frame_capture. Read by the report_road_hazard
+                # (Crowdsourced Mapping) tool to snapshot + upload a JPEG.
+                "latest_frame": None,
+                "video_stream": None,
             },
         )
         logger.info(
             "AgentSession created: elapsed=%.1fms "
-            "(aec_warmup=0.5s, endpointing min=0.3s max=1.5s, preemptive=on)",
+            "(turn_detection=manual, aec_warmup=0.5s, "
+            "endpointing min=0.3s max=1.5s, preemptive=on)",
             (time.monotonic() - t_session) * 1000,
         )
     except Exception as exc:
@@ -152,6 +176,14 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as exc:
         logger.error("Failed to attach data handlers: %s", exc, exc_info=True)
 
+    # ── Crowdsourced Mapping: buffer the latest camera frame ──
+    # The report_road_hazard tool snapshots session.userdata["latest_frame"]
+    # (a rtc.VideoFrame) and uploads it as JPEG. Best-effort.
+    try:
+        attach_video_frame_capture(ctx.room, session)
+    except Exception as exc:
+        logger.error("Failed to attach video frame capture: %s", exc, exc_info=True)
+
     # ── Configure room I/O ──
     logger.info(
         "Configuring room I/O — video_input=True audio_input=True audio_output=True"
@@ -177,6 +209,18 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as exc:
         logger.error("AgentSession.start() failed: %s", exc, exc_info=True)
         raise
+
+    # ── Wake word gating ("Hey Tutu") ──
+    # With manual turn detection above, the agent stays silent until the wake
+    # word is detected. attach_wake_word subscribes to the user's mic, runs the
+    # openwakeword ONNX model, and opens a listening turn on detection. A
+    # proactive safety loop also opens periodic turns so Gemini can still emit
+    # urgent obstacle warnings. Best-effort — failure logs but never crashes.
+    try:
+        attach_wake_word(session, ctx.room)
+        logger.info("Wake word detector attached — gating active ('Hey Tutu')")
+    except Exception as exc:
+        logger.error("Failed to attach wake word detector: %s", exc, exc_info=True)
 
     total_ms = (time.monotonic() - t_start) * 1000
     logger.info(

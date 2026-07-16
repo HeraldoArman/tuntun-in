@@ -7,7 +7,9 @@ visible during development and production.
 
 Data-channel handlers store the latest GPS fix (Deep Navigator origin) and the
 blind user's Convex profile id (Overwatch guardian resolution) on
-session.userdata.
+session.userdata. Video frame capture buffers the latest chest-camera
+VideoFrame on session.userdata["latest_frame"] for the Crowdsourced Mapping
+tool to snapshot.
 """
 
 from __future__ import annotations
@@ -15,10 +17,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from livekit import rtc
 from livekit.agents import AgentSession
 from livekit.agents.metrics import RealtimeModelMetrics
 
 from tuntun_agent.logging_setup import get_logger
+from tuntun_agent.navigator import spawn_background_task
 
 logger = get_logger()
 
@@ -177,6 +181,70 @@ def attach_data_handlers(room: Any, session: AgentSession) -> None:
                 return
         except Exception as exc:
             logger.error("Failed to handle data packet: %s", exc, exc_info=True)
+
+
+def attach_video_frame_capture(room: Any, session: AgentSession) -> None:
+    """Keep the latest camera VideoFrame on session.userdata for the
+    Crowdsourced Mapping tool to snapshot on demand.
+
+    The blind user's chest-mounted camera publishes a video track that room_io
+    already subscribes to (to feed Gemini). We open our own rtc.VideoStream on
+    that same track and buffer the most recent frame on
+    session.userdata["latest_frame"]. The report_road_hazard tool encodes that
+    frame to JPEG and uploads it. Only one camera is expected; a new video track
+    replaces the previous stream. Best-effort — failures log + never crash.
+    """
+    logger.info("Attaching video frame capture to room: %s", room.name)
+
+    def _start(track: Any) -> None:
+        userdata = session.userdata
+        if not isinstance(userdata, dict):
+            return
+        if track.kind != rtc.TrackKind.KIND_VIDEO:
+            return
+        # Replace any existing stream (only one camera expected).
+        old = userdata.get("video_stream")
+        if old is not None:
+            spawn_background_task(old.aclose())
+        stream = rtc.VideoStream(track)
+        userdata["video_stream"] = stream
+        logger.info(
+            "[VIDEO] frame capture started — track=%s", getattr(track, "sid", "?")
+        )
+
+        async def _read() -> None:
+            try:
+                async for event in stream:
+                    userdata["latest_frame"] = event.frame
+            except Exception as exc:
+                logger.error("[VIDEO] frame read loop ended: %s", exc, exc_info=True)
+
+        spawn_background_task(_read())
+
+    @room.on("track_subscribed")
+    def on_track_subscribed(track, publication, participant):
+        _start(track)
+
+    @room.on("track_unsubscribed")
+    def on_track_unsubscribed(track, publication, participant):
+        if track.kind != rtc.TrackKind.KIND_VIDEO:
+            return
+        userdata = session.userdata
+        if not isinstance(userdata, dict):
+            return
+        stream = userdata.get("video_stream")
+        if stream is not None:
+            userdata["video_stream"] = None
+            userdata["latest_frame"] = None
+            spawn_background_task(stream.aclose())
+            logger.info("[VIDEO] frame capture stopped — track=%s", publication.sid)
+
+    # The camera track may already be subscribed before we attach (room_io
+    # subscribes early). Pick it up from existing remote participants.
+    for participant in room.remote_participants.values():
+        for publication in participant.track_publications.values():
+            if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
+                _start(publication.track)
 
 
 def attach_room_event_loggers(room: Any) -> None:

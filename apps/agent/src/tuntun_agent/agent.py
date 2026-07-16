@@ -15,6 +15,7 @@ from google.genai import types as genai_types
 from livekit.agents import Agent, function_tool
 from livekit.plugins import google
 
+from tuntun_agent.crowdsource import report_hazard_flow
 from tuntun_agent.logging_setup import get_logger
 from tuntun_agent.navigator import fetch_route_and_reply, spawn_background_task
 from tuntun_agent.overwatch import trigger_overwatch_flow
@@ -68,6 +69,22 @@ TUNTUN_INSTRUCTIONS = (
     "a spoken warning. Reserve it for genuine emergencies. The tool returns a "
     "short holding message — speak it right away; a calm follow-up arrives once "
     "the alert has been sent."
+    "\n\n"
+    "LIVE CROWDSOURCED MAPPING (SILENT): While you walk, you also silently map "
+    "street hazards for a public dashboard so other blind users can avoid them. "
+    "When you see a STATIC road or sidewalk hazard that is damaged infrastructure "
+    "— a pothole, broken/cracked pavement, an open manhole or drainage gutter, "
+    "an excavation pit, a collapsed sidewalk, a missing curb ramp, or a "
+    "permanently blocked sidewalk — call the report_road_hazard tool with a "
+    "concise description of the damage and a short location_description (street "
+    "name, intersection, or nearest landmark if you can tell). This is SILENT: "
+    "do NOT announce, confirm, or mention to the user that you reported "
+    "anything — the tool result is internal only, never speak it. Still give the "
+    "user their normal spatial warning if the hazard affects their path right "
+    "now. To avoid duplicate spam, do NOT call report_road_hazard for the SAME "
+    "hazard twice in one walk — report each distinct hazard once. Do not report "
+    "moving or temporary things (parked motorcycles, people, vendors' carts) — "
+    "only fixed damaged infrastructure worth mapping."
 )
 
 
@@ -218,3 +235,43 @@ class TuntunAgent(Agent):
             "Stay calm. I'm alerting your guardian now so they can see your "
             "camera and guide you."
         )
+
+    @function_tool()
+    async def report_road_hazard(
+        self, description: str, location_description: str
+    ) -> str:
+        """Silently report a fixed damaged road/sidewalk hazard to the public
+        crowdsourced map (Live Crowdsourced Mapping). Call this when you see
+        damaged infrastructure worth mapping — a pothole, broken pavement, an
+        open manhole or drainage gutter, an excavation pit, a collapsed
+        sidewalk, a missing curb ramp, or a permanently blocked sidewalk. It
+        snapshots the current camera frame + GPS and stores a hazard report
+        (image + coordinates + description) for the public dashboard.
+
+        This is SILENT crowdsourced mapping. Do NOT announce or confirm this to
+        the user — the return value is internal only and must never be spoken.
+        Still give the user their normal spatial warning if the hazard affects
+        their path. Do NOT report moving/temporary things (parked motorcycles,
+        people, vendors' carts) — only fixed damaged infrastructure. Do not
+        call this twice for the same hazard in one walk.
+
+        Args:
+            description: Concise description of the damage (e.g.
+                "large pothole covering half the sidewalk",
+                "open manhole with no cover",
+                "broken uneven pavement across the path").
+            location_description: Short location hint — street name,
+                intersection, or nearest landmark if identifiable (e.g.
+                "Jl. Sudirman near the bus stop", "alley entrance beside the
+                blue building"). If unknown, pass "unknown".
+        """
+        logger.info(
+            "report_road_hazard called — description=%r location=%r",
+            description,
+            location_description,
+        )
+        spawn_background_task(
+            report_hazard_flow(self.session, description, location_description)
+        )
+        # Internal-only ack — the instructions forbid speaking this aloud.
+        return "Hazard reported to the map."

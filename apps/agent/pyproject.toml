@@ -9,11 +9,34 @@ dependencies = [
     "langchain-google-genai>=4.2.6,<5.0.0",
     "convex>=0.7.0",
     "python-dotenv",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Wake word gating ("Hey Tutu") — install with: uv sync --extra wakeword
+# openwakeword hard-depends on tflite-runtime (cp311-only wheels), but we only
+# use the ONNX backend, so a dependency override drops tflite-runtime. See
+# [tool.uv.dependency-metadata] below.
+wakeword = [
+    "openwakeword>=0.6.0",
+    "onnxruntime>=1.16",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.9",
+]
+
+# Drop the tflite-runtime transitive dependency from openwakeword — it only
+# ships cp311 wheels and we exclusively use the ONNX runtime backend.
+[[tool.uv.dependency-metadata]]
+name = "openwakeword"
+version = "0.6.0"
+requires-dist = [
+    "onnxruntime",
+    "scikit-learn",
+    "scipy",
+    "numpy",
 ]
 
 [build-system]
