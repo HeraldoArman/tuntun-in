@@ -1,4 +1,6 @@
 @import "@tuntun-in/ui/globals.css";
+@import "@livekit/components-styles";
+@import "@livekit/components-styles/themes/default.css";
 
 @media (prefers-reduced-motion: reduce) {
   *,
