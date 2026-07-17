@@ -46,6 +46,11 @@ logger = get_logger()
 # `kind`, not the free-text description, so a rephrased detection of the same
 # physical hazard does not re-fire every few seconds.
 _COOLDOWN = 8.0
+# Max seconds a background follow-up waits for the agent to finish speaking
+# before firing its own generate_reply. Bounds the wait so a wedged speaking
+# state can never hang the follow-up (and the user) forever; after the cap it
+# proceeds best-effort. Generous: a spoken turn reply is ~3-5s.
+_WAIT_SPEECH_END_TIMEOUT = 12.0
 
 
 class HazardPriority(Enum):
@@ -107,25 +112,46 @@ def _hazard_instructions(hazard: Hazard, urgent: bool) -> str:
 
 
 async def speak_serialized(session: AgentSession, instructions: str) -> None:
-    """Speak a background follow-up via generate_reply, serialized by the
-    per-session reply lock so it cannot race the hazard loop (or another
-    follow-up) on the same Gemini Live session.
+    """Speak a background follow-up via generate_reply without racing the
+    agent's current turn reply, the hazard loop, or another follow-up on the
+    same Gemini Live session.
 
-    Without serialization, concurrent generate_reply calls on a manual-turn
-    session race and the loser times out waiting for generation_created — the
-    user then hears silence for 60s while the route/detour reply is dropped.
+    Two guards:
+    1. Wait for the agent to stop speaking (not_speaking_event) BEFORE firing,
+       so the follow-up does not collide with the in-flight turn reply (which
+       LiveKit speaks itself and does not take the lock). Capped at
+       _WAIT_SPEECH_END_TIMEOUT so a stuck-speaking state can never hang the
+       follow-up forever — after the cap it proceeds best-effort.
+    2. Acquire the per-session reply_lock so two follow-ups (or a follow-up and
+       a hazard warning) can't both call generate_reply at once (the loser would
+       time out waiting for generation_created -> 60s silence).
+
     Best-effort: dead-session (RuntimeError), timeout, and cancellation errors
     are logged and swallowed, never raised into the background task.
     """
-    lock = None
     userdata = getattr(session, "userdata", None)
-    if isinstance(userdata, dict):
-        lock = userdata.get("reply_lock")
+    lock = userdata.get("reply_lock") if isinstance(userdata, dict) else None
+    not_speaking = (
+        userdata.get("not_speaking_event") if isinstance(userdata, dict) else None
+    )
     try:
+        # Guard 1: don't fire while the agent is mid-speech (turn reply or hazard
+        # warning). Timeout-bounded so a wedged speaking state can't deadlock.
+        if not_speaking is not None:
+            try:
+                await asyncio.wait_for(
+                    not_speaking.wait(), timeout=_WAIT_SPEECH_END_TIMEOUT
+                )
+            except TimeoutError:
+                logger.warning(
+                    "speak_serialized: timed out waiting for speech to end — "
+                    "proceeding best-effort"
+                )
         if lock is None:
             # No PriorityManager attached — degrade to an unlocked speak.
             await session.generate_reply(instructions=instructions)
             return
+        # Guard 2: serialize with any other reply on this session.
         async with lock:
             await session.generate_reply(instructions=instructions)
     except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
@@ -341,14 +367,22 @@ def attach_priority_manager(session: AgentSession) -> PriorityManager:
     """Create a PriorityManager for the session and wire its state tracker.
 
     Returns the manager so the caller can feed it hazards (e.g. from the
-    hazard detection loop). Also publishes the per-session reply lock on
-    session.userdata["reply_lock"] so background follow-ups (navigator,
-    reasoning) can serialize their generate_reply calls through the same lock.
+    hazard detection loop). Also publishes two coordination primitives on
+    session.userdata so background follow-ups (navigator, reasoning) can avoid
+    racing the agent's turn reply or each other:
+
+    - "reply_lock": asyncio.Lock serializing every generate_reply on the session
+    - "not_speaking_event": asyncio.Event set when the agent is NOT speaking,
+      so a follow-up can wait for the current turn reply / hazard warning to
+      finish before firing its own generate_reply (closes the turn-vs-followup
+      race that the lock alone can't cover, since the turn reply is spoken by
+      LiveKit's own machinery and does not take the lock).
     """
     pm = PriorityManager(session)
     pm.attach(session)
     userdata = getattr(session, "userdata", None)
     if isinstance(userdata, dict):
         userdata["reply_lock"] = pm._reply_lock
+        userdata["not_speaking_event"] = pm._not_speaking
     logger.info("PriorityManager attached — cooldown=%.1fs", _COOLDOWN)
     return pm
