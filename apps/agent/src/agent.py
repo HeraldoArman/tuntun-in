@@ -63,6 +63,7 @@ from tuntun_agent.logging_setup import (  # noqa: E402
     log_startup_env,
     setup_logging,
 )
+from tuntun_agent.navigator import spawn_background_task  # noqa: E402
 from tuntun_agent.priority import attach_priority_manager  # noqa: E402
 from tuntun_agent.wakeword import attach_wake_word  # noqa: E402
 
@@ -255,8 +256,22 @@ async def entrypoint(ctx: JobContext) -> None:
     # over priority + cooldown, as the design doc prescribes.
     if priority_manager is not None:
         try:
-            attach_hazard_loop(session, priority_manager)
+            hazard_loop = attach_hazard_loop(session, priority_manager)
             logger.info("Hazard detection loop attached — proactive warnings on")
+
+            # Stop the hazard loop + priority manager when the room disconnects
+            # so they don't keep firing generate_reply on a dead session (the
+            # "AgentSession isn't running" storm that starves the user's real
+            # turns with cancelled zero-duration replies).
+            @ctx.room.on("disconnected")
+            def _on_room_disconnected(reason=None):
+                logger.info(
+                    "[ROOM-EVENT] stopping hazard loop + priority manager "
+                    "on disconnect — reason=%s",
+                    reason,
+                )
+                priority_manager.stop()
+                spawn_background_task(hazard_loop.stop())
         except Exception as exc:
             logger.error("Failed to attach hazard loop: %s", exc, exc_info=True)
 

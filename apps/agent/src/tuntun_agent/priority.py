@@ -103,10 +103,24 @@ class PriorityManager:
         # a deferred MODERATE can tell if a CRITICAL fired while it was waiting
         # and drop itself instead of clobbering the life-threatening warning.
         self._last_critical_monotonic: float = 0.0
+        # Set when the room disconnects. Once true, on_hazard / _speak / _interrupt
+        # no-op so the hazard loop's deferred tasks stop firing generate_reply on
+        # a dead session (the "AgentSession isn't running" storm that starves the
+        # user's real turns with cancelled zero-duration replies).
+        self._stopped: bool = False
 
     @property
     def design_state(self) -> str:
         return _design_state(self._livekit_state)
+
+    def stop(self) -> None:
+        """Stop accepting hazards + cancel any deferred MODERATE waiter.
+
+        Called on room disconnect so background deferred tasks don't keep
+        calling generate_reply on a session that is no longer running.
+        """
+        self._stopped = True
+        self._cancel_deferred()
 
     def attach(self, session: AgentSession) -> None:
         """Track agent state transitions so on_hazard knows when it is safe to
@@ -143,6 +157,8 @@ class PriorityManager:
         """
         key = hazard.description
         now = time.monotonic()
+        if self._stopped:
+            return
         if now - self._last_warned.get(key, 0.0) < _COOLDOWN:
             logger.debug(
                 "[PRIORITY] skip (cooldown) — %r priority=%s",
@@ -237,12 +253,16 @@ class PriorityManager:
         self._last_warned[hazard.description] = time.monotonic()
 
     async def _interrupt(self) -> None:
+        if self._stopped:
+            return
         try:
             await self._session.interrupt()
         except Exception as exc:
             logger.warning("[PRIORITY] interrupt failed: %s", exc)
 
     async def _speak(self, instructions: str) -> None:
+        if self._stopped:
+            return
         try:
             await self._session.generate_reply(instructions=instructions)
         except Exception as exc:
