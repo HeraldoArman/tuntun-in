@@ -14,10 +14,8 @@ import time
 from typing import Any
 
 import httpx
-from livekit.agents import AgentSession
 
 from tuntun_agent.logging_setup import get_logger
-from tuntun_agent.priority import speak_serialized
 
 logger = get_logger()
 
@@ -260,15 +258,23 @@ async def _directions(
         return None
 
 
-async def fetch_route_and_reply(
-    session: AgentSession,
+async def build_route_reply(
     api_key: str,
     origin: tuple[float, float],
     destination: str,
-) -> None:
-    """Background task: geocode destination, fetch directions, push a
-    landmark-grounded guidance reply via generate_reply. Mirrors the design-doc
-    async-tool pattern (return fast, speak result later) to avoid dead-air."""
+) -> str:
+    """Resolve destination, fetch walking directions, and return a single
+    spoken-route string for the navigate_to tool to return as its result.
+
+    Synchronous-by-design: the navigate_to tool awaits this and returns the
+    result, so LiveKit speaks it as the ONE turn-reply generation. The prior
+    pattern (tool returns a holding message + a background task fires a SECOND
+    generate_reply) collided on the Gemini Live native-audio session — the
+    second generation timed out waiting for generation_created (~8s silence)
+    because the holding-message turn was still active. One generation, no
+    collision. Fetch is fast (~0.5s in practice), so the user hears the route
+    after a short beat instead of an 8s timeout.
+    """
     t0 = time.monotonic()
     logger.info(
         "Deep Navigator fetch start: destination=%r origin=(%.6f, %.6f) api_key_len=%d",
@@ -280,28 +286,20 @@ async def fetch_route_and_reply(
 
     resolved = await _resolve_destination(api_key, origin, destination)
     if resolved is None:
-        await speak_serialized(
-            session,
-            (
-                f"Tell the user briefly in English that you could not find a "
-                f"place called '{destination}' on the map, and ask them to "
-                f"repeat or rephrase it. One short sentence."
-            ),
+        return (
+            f"Tell the user briefly in English that you could not find a place "
+            f"called '{destination}' on the map, and ask them to repeat or "
+            f"rephrase it. One short sentence."
         )
-        return
     dest_coords, dest_name = resolved
 
     steps = await _directions(api_key, origin, dest_coords)
     if not steps:
-        await speak_serialized(
-            session,
-            (
-                f"Tell the user briefly in English that you could not compute "
-                f"a walking route to '{dest_name}' right now. One short "
-                f"sentence, calm tone."
-            ),
+        return (
+            f"Tell the user briefly in English that you could not compute a "
+            f"walking route to '{dest_name}' right now. One short sentence, "
+            f"calm tone."
         )
-        return
 
     first = steps[0]
     remaining = len(steps) - 1
@@ -320,8 +318,7 @@ async def fetch_route_and_reply(
         first["instruction"],
     )
 
-    await speak_serialized(
-        session,
+    return (
         "You are guiding a visually impaired user and you can see their "
         "live chest-mounted camera feed. A walking route was just fetched. "
         f"Route to '{dest_name}':\n{steps_block}\n\n"
@@ -342,5 +339,5 @@ async def fetch_route_and_reply(
         "Keep it to one short, clear sentence in English. Example style: "
         "'Walk straight ahead, then turn left just past the blue food "
         "cart.' — NEVER 'Head northeast for 9 meters.'\n\n"
-        f"Route summary for your reference: {route_summary}",
+        f"Route summary for your reference: {route_summary}"
     )

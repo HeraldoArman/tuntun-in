@@ -16,7 +16,7 @@ from livekit.plugins import google
 
 from tuntun_agent.crowdsource import report_hazard_flow
 from tuntun_agent.logging_setup import get_logger
-from tuntun_agent.navigator import fetch_route_and_reply, spawn_background_task
+from tuntun_agent.navigator import build_route_reply, spawn_background_task
 from tuntun_agent.overwatch import trigger_overwatch_flow
 from tuntun_agent.reasoning import compute_detour
 
@@ -251,22 +251,23 @@ class TuntunAgent(Agent):
 
         origin = (float(lat), float(lng))
         logger.info(
-            "navigate_to: dispatching background route fetch — destination=%r "
+            "navigate_to: fetching route synchronously — destination=%r "
             "origin=(%.6f, %.6f)",
             destination,
             origin[0],
             origin[1],
         )
-        # Return fast with a holding message; speak the real route once fetched.
-        task = spawn_background_task(
-            fetch_route_and_reply(self.session, api_key, origin, destination)
-        )
+        # Fetch synchronously and return the spoken route as the tool result so
+        # LiveKit speaks it as the single turn-reply generation. The old pattern
+        # (return a holding message + fire a 2nd generate_reply from a background
+        # task) collided on the Gemini Live session and timed out (~8s silence).
+        reply_text = await build_route_reply(api_key, origin, destination)
         logger.info(
-            "navigate_to: background task created id=%s destination=%r",
-            id(task),
+            "navigate_to: route reply built — destination=%r len=%d",
             destination,
+            len(reply_text),
         )
-        return f"On it — looking up the route to {destination}, give me a moment."
+        return reply_text
 
     @function_tool()
     async def trigger_overwatch(self, reason: str) -> str:
