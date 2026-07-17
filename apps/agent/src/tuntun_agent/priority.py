@@ -19,13 +19,17 @@ The ``PriorityManager`` is that arbiter. It owns:
   * the 3-level interrupt policy from the design doc:
 
       CRITICAL  -> interrupt() + generate_reply SEGERA (always preempts)
-      MODERATE  -> if SPEAKING, defer (non-blocking) and speak once the
-                   current speech ends, unless a CRITICAL preempts it
+      MODERATE  -> if no safe gap, defer (non-blocking, bounded) and speak
+                   once a safe gap opens, unless a CRITICAL preempts it
       LOW       -> only speak if IDLE; otherwise skip (not time-critical)
 
-There is no native ``wait_for_speech_end`` on AgentSession, so we track the
-speaking -> non-speaking transition ourselves with an ``asyncio.Event`` that is
-cleared on entering "speaking" and set on leaving it.
+"Safe gap" = agent state in {listening, idle, initializing} AND user not
+speaking. Firing OUR ``generate_reply`` outside a safe gap collides with
+LiveKit's own turn reply (which does not take ``reply_lock``) -> generation
+timeout -> silence. Waiting for true IDLE instead wedges forever: with manual
+turn detection + preemptive generation the session never returns to ``idle``
+after the first wake word. ``_safe_to_warn`` is the event that captures the
+real condition, driven by ``agent_state_changed`` + ``user_state_changed``.
 """
 
 from __future__ import annotations
@@ -46,11 +50,20 @@ logger = get_logger()
 # `kind`, not the free-text description, so a rephrased detection of the same
 # physical hazard does not re-fire every few seconds.
 _COOLDOWN = 8.0
-# Max seconds a background follow-up waits for the agent to finish speaking
-# before firing its own generate_reply. Bounds the wait so a wedged speaking
-# state can never hang the follow-up (and the user) forever; after the cap it
-# proceeds best-effort. Generous: a spoken turn reply is ~3-5s.
+# Max seconds a background follow-up waits for a safe gap per attempt (two
+# attempts, then it drops with an ERROR). Bounds the wait so a dead session
+# can never leak the background task. Generous: a spoken turn reply is ~3-5s.
 _WAIT_SPEECH_END_TIMEOUT = 12.0
+# Max seconds a deferred MODERATE waits for a safe gap (agent not generating +
+# user not speaking) before dropping. Bounded so a deferred warning can't hang
+# forever when the user keeps talking; the hazard loop re-defers on the next
+# tick if the hazard persists, so dropping just yields this one attempt.
+_MODERATE_WAIT_TIMEOUT = 6.0
+# Max seconds a CRITICAL warning waits for reply_lock before firing unlocked.
+# interrupt() cancels the current *speech* but NOT the background asyncio task
+# holding the lock inside generate_reply — so without a bound, a CRITICAL
+# warning can be delayed behind a slow follow-up. Life-safety > collision risk.
+_CRITICAL_LOCK_TIMEOUT = 2.0
 
 
 class HazardPriority(Enum):
@@ -117,11 +130,11 @@ async def speak_serialized(session: AgentSession, instructions: str) -> None:
     same Gemini Live session.
 
     Two guards:
-    1. Wait for the agent to stop speaking (not_speaking_event) BEFORE firing,
-       so the follow-up does not collide with the in-flight turn reply (which
-       LiveKit speaks itself and does not take the lock). Capped at
-       _WAIT_SPEECH_END_TIMEOUT so a stuck-speaking state can never hang the
-       follow-up forever — after the cap it proceeds best-effort.
+    1. Wait for a SAFE GAP (agent not generating/speaking its turn reply AND
+       user not speaking) BEFORE firing. Two bounded attempts; if no gap opens
+       the follow-up is DROPPED with an ERROR — firing into a collision
+       produces overlapping generations (the 17s garbled-audio bug), which is
+       worse than a drop the user can retry by re-asking.
     2. Acquire the per-session reply_lock so two follow-ups (or a follow-up and
        a hazard warning) can't both call generate_reply at once (the loser would
        time out waiting for generation_created -> 60s silence).
@@ -131,33 +144,44 @@ async def speak_serialized(session: AgentSession, instructions: str) -> None:
     """
     userdata = getattr(session, "userdata", None)
     lock = userdata.get("reply_lock") if isinstance(userdata, dict) else None
-    # Prefer idle_event (true IDLE = turn reply done) over not_speaking_event
-    # (set during `thinking` too — waiting on it races LiveKit's own turn
-    # reply). Falls back to not_speaking_event if idle_event isn't published.
-    idle_event = userdata.get("idle_event") if isinstance(userdata, dict) else None
+    # safe_to_warn_event is the real safe gap; not_speaking_event is the
+    # weaker fallback (set during `thinking` too — can still race the turn
+    # reply) used only when no PriorityManager published the safe event.
+    safe_event = (
+        userdata.get("safe_to_warn_event") if isinstance(userdata, dict) else None
+    )
     not_speaking = (
         userdata.get("not_speaking_event") if isinstance(userdata, dict) else None
     )
-    wait_event = idle_event or not_speaking
+    wait_event = safe_event or not_speaking
     t0 = time.monotonic()
     try:
-        # Guard 1: don't fire while the agent is mid-turn (turn reply in flight
-        # or speaking). Timeout-bounded so a wedged state can't deadlock.
+        # Guard 1: bounded attempts at a safe gap. Bounded so a dead session
+        # can't leak this background task forever on wait().
         if wait_event is not None:
-            try:
-                await asyncio.wait_for(
-                    wait_event.wait(), timeout=_WAIT_SPEECH_END_TIMEOUT
-                )
-            except TimeoutError:
-                logger.warning(
-                    "[SERIALIZE-RACE] idle/speech-end wait TIMEOUT %.1fs — "
-                    "proceeding best-effort (wedged state?)",
+            for attempt in (1, 2):
+                try:
+                    await asyncio.wait_for(
+                        wait_event.wait(), timeout=_WAIT_SPEECH_END_TIMEOUT
+                    )
+                    break
+                except TimeoutError:
+                    logger.warning(
+                        "[SERIALIZE-RACE] safe-gap wait TIMEOUT %.1fs (attempt %d/2)",
+                        time.monotonic() - t0,
+                        attempt,
+                    )
+            else:
+                logger.error(
+                    "[SERIALIZE-RACE] no safe gap after %.1fs — DROPPING "
+                    "follow-up (firing would collide with the turn reply)",
                     time.monotonic() - t0,
                 )
+                return
         speech_wait = time.monotonic() - t0
         if speech_wait > 0.2:
             logger.info(
-                "[SERIALIZE-RACE] waited %.2fs for idle before lock",
+                "[SERIALIZE-RACE] waited %.2fs for safe gap before lock",
                 speech_wait,
             )
         if lock is None:
@@ -219,16 +243,19 @@ class PriorityManager:
         # MODERATE hazard wait for the end of the current speech before firing.
         self._not_speaking = asyncio.Event()
         self._not_speaking.set()
-        # Set when the session is truly IDLE (no user turn in flight, agent not
-        # speaking/thinking). A deferred MODERATE waits on THIS, not
-        # ``_not_speaking``: ``_not_speaking`` is set during ``thinking`` too
-        # (LiveKit generating the user's turn reply), so waiting on it would
-        # fire our hazard generate_reply mid-turn and race LiveKit's own turn
-        # reply (which does NOT take reply_lock) -> generation_created timeout
-        # -> user hears silence and repeats the wake word. Waiting for IDLE
-        # guarantees the turn reply is done before we speak.
-        self._idle_event = asyncio.Event()
-        self._idle_event.set()
+        # True when the agent is in a state where OUR generate_reply will not
+        # collide with LiveKit's own turn reply OR clobber the user's speech:
+        # agent state is listening/idle/initializing (NOT thinking/speaking) AND
+        # the user is not currently speaking. This is the real "safe gap".
+        # The session never reaches `idle` after the first wake word (manual
+        # turn detection + preemptive generation keep it cycling
+        # listening<->thinking<->speaking), so waiting on `idle` hangs forever
+        # and waiting on `not_speaking` fires during `thinking` (races the turn
+        # reply generation). `safe_to_warn` is what actually avoids both.
+        self._agent_ready = True  # agent state in listening/idle/initializing
+        self._user_speaking = False
+        self._safe_to_warn = asyncio.Event()
+        self._safe_to_warn.set()
         # Deferred MODERATE state: when a MODERATE hazard arrives while the
         # agent is speaking, we must NOT block the perception loop on
         # wait_for_speech_end (that would stall the hazard loop and delay a
@@ -257,14 +284,26 @@ class PriorityManager:
         calling generate_reply on a session that is no longer running.
         """
         self._stopped = True
+        # Wake any waiter parked on _safe_to_warn so it exits via the
+        # _stopped check instead of hanging on a dead session.
+        self._safe_to_warn.set()
         self._cancel_deferred()
 
+    def _update_safe(self) -> None:
+        """Recompute the safe-gap event from the latest agent/user states."""
+        if self._stopped:
+            return
+        if self._agent_ready and not self._user_speaking:
+            self._safe_to_warn.set()
+        else:
+            self._safe_to_warn.clear()
+
     def attach(self, session: AgentSession) -> None:
-        """Track agent state transitions so on_hazard knows when it is safe to
-        interrupt, and so MODERATE hazards can wait for speech to end."""
+        """Track agent + user state transitions so on_hazard knows when it is
+        safe to interrupt, and so deferred hazards can wait for a safe gap."""
 
         @session.on("agent_state_changed")
-        def _on_state_changed(ev: Any) -> None:
+        def _on_agent_state_changed(ev: Any) -> None:
             old = self._livekit_state
             new = ev.new_state
             self._livekit_state = new
@@ -272,21 +311,21 @@ class PriorityManager:
                 self._not_speaking.clear()
             elif old == "speaking":
                 self._not_speaking.set()
-            # _idle_event tracks the true IDLE design state. Set only when we
-            # land in IDLE (initializing/idle); cleared the moment we leave it
-            # for ACTIVE_CONVERSATION or SPEAKING. See __init__ for why the
-            # deferred MODERATE waits on this instead of _not_speaking.
-            new_design = _design_state(new)
-            if new_design == STATE_IDLE:
-                self._idle_event.set()
-            else:
-                self._idle_event.clear()
+            # thinking/speaking = LiveKit's own turn reply is being generated
+            # or spoken — NOT safe for our generate_reply.
+            self._agent_ready = new in ("listening", "idle", "initializing")
+            self._update_safe()
             logger.debug(
                 "[PRIORITY] state %s -> %s (design=%s)",
                 old,
                 new,
                 self.design_state,
             )
+
+        @session.on("user_state_changed")
+        def _on_user_state_changed(ev: Any) -> None:
+            self._user_speaking = ev.new_state == "speaking"
+            self._update_safe()
 
     async def wait_for_speech_end(self) -> None:
         """Block until the agent is no longer speaking (or already isn't)."""
@@ -335,19 +374,16 @@ class PriorityManager:
             self._cancel_deferred()
             self._last_critical_monotonic = time.monotonic()
             await self._interrupt()
-            await self._speak(_hazard_instructions(hazard, urgent=True))
+            await self._speak(_hazard_instructions(hazard, urgent=True), critical=True)
         elif hazard.priority is HazardPriority.MODERATE:
-            if state != STATE_IDLE:
-                # Defer while the user's turn is in flight (ACTIVE_CONVERSATION)
-                # OR the agent is speaking. Firing a MODERATE generate_reply
-                # here would clobber/race LiveKit's own turn reply (which does
-                # NOT take reply_lock) -> generation_created timeout -> the
-                # user hears silence and repeats the wake word 5+ times. The
-                # deferred waiter holds for IDLE (turn fully done) so we speak
-                # right after, not mid-turn. CRITICAL still preempts via
-                # interrupt() — only MODERATE/LOW yield to the user's turn.
+            if not self._safe_to_warn.is_set():
+                # No safe gap: the user's turn reply is being generated/spoken
+                # OR the user is talking. Firing here would race LiveKit's own
+                # turn reply (which does NOT take reply_lock) -> generation
+                # timeout -> silence. Defer (bounded); the waiter fires when a
+                # safe gap opens. CRITICAL still preempts via interrupt().
                 logger.info(
-                    "[HAZARD-RACE] defer MODERATE — state=%s kind=%r (wait for IDLE)",
+                    "[HAZARD-RACE] defer MODERATE — state=%s kind=%r (wait for safe gap)",
                     state,
                     key,
                 )
@@ -385,22 +421,41 @@ class PriorityManager:
         self._deferred_task = None
 
     async def _deferred_moderate_speak(self) -> None:
-        """Background waiter: speak the latest deferred MODERATE once the
-        session is truly IDLE (user's turn reply finished), unless a CRITICAL
-        preempted it while waiting.
+        """Background waiter: speak the latest deferred MODERATE once a safe
+        gap opens (agent not generating/speaking AND user not speaking),
+        unless a CRITICAL preempts it or no gap opens within the bound.
 
-        Waits on ``_idle_event`` (not ``_not_speaking``) so the turn reply
-        completes first — see __init__ for why this is what closes the race.
+        Bounded wait: on timeout the hazard is dropped — the hazard loop
+        re-defers on its next tick if the hazard is still visible, so dropping
+        only yields this one attempt. Unbounded would hang the waiter forever
+        when the user keeps talking (the 111s wedge this replaces).
         """
         started = time.monotonic()
         try:
-            await self._idle_event.wait()
-        except asyncio.CancelledError:
+            async with asyncio.timeout(_MODERATE_WAIT_TIMEOUT):
+                await self._safe_to_warn.wait()
+        except TimeoutError:
+            self._pending_moderate = None
+            self._deferred_task = None
             logger.info(
-                "[HAZARD-RACE] deferred MODERATE cancelled (CRITICAL preempted) "
-                "after %.2fs",
+                "[HAZARD-RACE] deferred MODERATE dropped after %.2fs — no safe "
+                "gap (hazard loop re-defers if it persists)",
                 time.monotonic() - started,
             )
+            return
+        except asyncio.CancelledError:
+            cause = (
+                "session stopped (disconnect)"
+                if self._stopped
+                else "CRITICAL preempted"
+            )
+            logger.info(
+                "[HAZARD-RACE] deferred MODERATE cancelled (%s) after %.2fs",
+                cause,
+                time.monotonic() - started,
+            )
+            return
+        if self._stopped:
             return
         wait = time.monotonic() - started
         hazard = self._pending_moderate
@@ -443,26 +498,44 @@ class PriorityManager:
         except Exception as exc:
             logger.warning("[PRIORITY] interrupt failed: %s", exc)
 
-    async def _speak(self, instructions: str) -> None:
+    async def _speak(self, instructions: str, *, critical: bool = False) -> None:
         if self._stopped:
             return
         # Hold the reply lock so the hazard reply can't race a background
         # navigator/reasoning follow-up on the same Gemini Live session.
         t0 = time.monotonic()
+        acquired = False
         try:
-            async with self._reply_lock:
-                lock_wait = time.monotonic() - t0
-                if lock_wait > 0.2:
-                    # Hazard warning blocked behind a wake/navigator/follow-up
-                    # reply. CRITICAL should have preempted via interrupt(); a
-                    # long wait here for a CRITICAL means the holder wasn't
-                    # cancelled and the safety warning was delayed.
-                    logger.warning(
-                        "[HAZARD-RACE] CRITICAL/MODERATE lock wait=%.2fs — "
-                        "safety warning delayed behind another reply",
-                        lock_wait,
+            if critical:
+                # interrupt() does NOT cancel the background task holding the
+                # lock inside generate_reply, so an unbounded wait can delay a
+                # life-safety warning. Bound it; past the bound, fire unlocked.
+                try:
+                    async with asyncio.timeout(_CRITICAL_LOCK_TIMEOUT):
+                        await self._reply_lock.acquire()
+                        acquired = True
+                except TimeoutError:
+                    logger.error(
+                        "[HAZARD-RACE] CRITICAL lock TIMEOUT %.1fs — firing "
+                        "unlocked (life-safety overrides collision risk)",
+                        time.monotonic() - t0,
                     )
-                await self._session.generate_reply(instructions=instructions)
+            else:
+                await self._reply_lock.acquire()
+                acquired = True
+            lock_wait = time.monotonic() - t0
+            if acquired and lock_wait > 0.2:
+                # Hazard warning blocked behind a wake/navigator/follow-up
+                # reply. A long wait here means the safety warning was delayed.
+                logger.warning(
+                    "[HAZARD-RACE] %s lock wait=%.2fs — safety warning "
+                    "delayed behind another reply",
+                    "CRITICAL" if critical else "MODERATE",
+                    lock_wait,
+                )
+            if self._stopped:
+                return
+            await self._session.generate_reply(instructions=instructions)
         except Exception as exc:
             logger.error(
                 "[HAZARD-RACE] generate_reply failed after %.2fs — %s",
@@ -470,6 +543,9 @@ class PriorityManager:
                 exc,
                 exc_info=True,
             )
+        finally:
+            if acquired:
+                self._reply_lock.release()
 
 
 def attach_priority_manager(session: AgentSession) -> PriorityManager:
@@ -481,18 +557,125 @@ def attach_priority_manager(session: AgentSession) -> PriorityManager:
     racing the agent's turn reply or each other:
 
     - "reply_lock": asyncio.Lock serializing every generate_reply on the session
-    - "not_speaking_event": asyncio.Event set when the agent is NOT speaking,
-      so a follow-up can wait for the current turn reply / hazard warning to
-      finish before firing its own generate_reply (closes the turn-vs-followup
-      race that the lock alone can't cover, since the turn reply is spoken by
-      LiveKit's own machinery and does not take the lock).
+    - "safe_to_warn_event": asyncio.Event set during a safe gap (agent not
+      generating/speaking its turn reply AND user not speaking) — the primary
+      condition background follow-ups wait on before firing.
+    - "not_speaking_event": asyncio.Event set when the agent is NOT speaking.
+      Weaker fallback (set during `thinking` too); only used when no
+      PriorityManager is attached.
     """
     pm = PriorityManager(session)
     pm.attach(session)
     userdata = getattr(session, "userdata", None)
     if isinstance(userdata, dict):
         userdata["reply_lock"] = pm._reply_lock
+        userdata["safe_to_warn_event"] = pm._safe_to_warn
         userdata["not_speaking_event"] = pm._not_speaking
-        userdata["idle_event"] = pm._idle_event
     logger.info("PriorityManager attached — cooldown=%.1fs", _COOLDOWN)
     return pm
+
+
+if __name__ == "__main__":
+    # Self-check for the state machine (repo has no test suite; this is the
+    # runnable check for the concurrency logic). Run:
+    #   uv run python src/tuntun_agent/priority.py
+    import logging
+    from types import SimpleNamespace
+
+    _MODERATE_WAIT_TIMEOUT = 0.3
+    _CRITICAL_LOCK_TIMEOUT = 0.3
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.userdata: dict[str, Any] = {}
+            self.replies: list[str] = []
+            self.interrupts = 0
+            self._handlers: dict[str, list[Any]] = {}
+
+        def on(self, event: str) -> Any:
+            def deco(fn: Any) -> Any:
+                self._handlers.setdefault(event, []).append(fn)
+                return fn
+
+            return deco
+
+        def emit(self, event: str, **kw: Any) -> None:
+            for fn in self._handlers.get(event, []):
+                fn(SimpleNamespace(**kw))
+
+        async def generate_reply(self, instructions: str = "", **kw: Any) -> None:
+            self.replies.append(instructions)
+
+        async def interrupt(self) -> None:
+            self.interrupts += 1
+
+    def _pm(session: _FakeSession) -> PriorityManager:
+        pm = PriorityManager(session)  # type: ignore[arg-type]
+        pm.attach(session)  # type: ignore[arg-type]
+        return pm
+
+    async def _main() -> None:
+        # A: MODERATE during agent speech defers, then fires on the safe gap.
+        s = _FakeSession()
+        pm = _pm(s)
+        s.emit("agent_state_changed", old_state="listening", new_state="speaking")
+        await pm.on_hazard(Hazard("pothole ahead", HazardPriority.MODERATE, "pothole"))
+        assert s.replies == [], "A: MODERATE fired while agent speaking"
+        s.emit("agent_state_changed", old_state="speaking", new_state="listening")
+        await asyncio.sleep(0.1)
+        assert len(s.replies) == 1, (
+            f"A: deferred MODERATE did not fire on safe gap ({s.replies})"
+        )
+        print("PASS A: deferred MODERATE fires when safe gap opens")
+
+        # B: no safe gap within the bound -> dropped, never fired.
+        s = _FakeSession()
+        pm = _pm(s)
+        s.emit("user_state_changed", old_state="listening", new_state="speaking")
+        await pm.on_hazard(
+            Hazard("step down left", HazardPriority.MODERATE, "step_down")
+        )
+        await asyncio.sleep(0.6)
+        assert s.replies == [], f"B: MODERATE fired without a safe gap ({s.replies})"
+        print("PASS B: deferred MODERATE dropped after bounded wait")
+
+        # C: CRITICAL preempts a deferred MODERATE and fires even while a
+        # background follow-up holds reply_lock past the bounded wait.
+        s = _FakeSession()
+        pm = _pm(s)
+        s.emit("agent_state_changed", old_state="listening", new_state="speaking")
+        await pm.on_hazard(
+            Hazard("gutter ahead", HazardPriority.MODERATE, "drainage_gutter")
+        )
+        await pm._reply_lock.acquire()
+        await pm.on_hazard(
+            Hazard("pit ahead", HazardPriority.CRITICAL, "excavation_pit")
+        )
+        assert len(s.replies) == 1 and "pit" in s.replies[0], (
+            f"C: CRITICAL did not fire past held lock ({s.replies})"
+        )
+        assert s.interrupts == 1, "C: CRITICAL did not interrupt"
+        pm._reply_lock.release()
+        await asyncio.sleep(0.1)
+        assert len(s.replies) == 1, (
+            f"C: preempted MODERATE fired after CRITICAL ({s.replies})"
+        )
+        print("PASS C: CRITICAL preempts deferred MODERATE + held lock")
+
+        # D: stop() during a deferral wakes the waiter; nothing fires after.
+        s = _FakeSession()
+        pm = _pm(s)
+        s.emit("agent_state_changed", old_state="listening", new_state="speaking")
+        await pm.on_hazard(
+            Hazard("open manhole", HazardPriority.MODERATE, "open_manhole")
+        )
+        pm.stop()
+        await asyncio.sleep(0.1)
+        assert s.replies == [], f"D: fired after stop ({s.replies})"
+        await pm.on_hazard(Hazard("vehicle", HazardPriority.CRITICAL, "vehicle"))
+        assert s.replies == [], "D: on_hazard not a no-op after stop"
+        print("PASS D: stop() cancels waiter and gates all later hazards")
+
+    logging.basicConfig(level=logging.CRITICAL)
+    asyncio.run(_main())
+    print("priority.py self-check: ALL PASS")

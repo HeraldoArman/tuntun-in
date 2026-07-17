@@ -31,7 +31,13 @@ logger = get_logger()
 
 # Rolling transcript file — one line per conversation turn, so the full dialog
 # is tailable without scraping interleaved nx stdout. Appended across sessions.
-_TRANSCRIPT_PATH = Path(os.environ.get("TUNTUN_TRANSCRIPT_FILE", "logs/transcript.log"))
+# Default under /tmp: the Docker CWD (/app) is not writable, and a relative
+# "logs/..." path failed with EACCES on every turn in production.
+_TRANSCRIPT_PATH = Path(
+    os.environ.get("TUNTUN_TRANSCRIPT_FILE", "/tmp/tuntun-transcript.log")
+)
+# Set on the first write failure so a bad path logs once instead of per turn.
+_transcript_disabled = False
 
 
 def _extract_text(item: Any) -> str:
@@ -49,7 +55,8 @@ def _extract_text(item: Any) -> str:
 
 def _append_transcript(role: Any, text: str) -> None:
     """Append one turn to the transcript file (best-effort, never raises)."""
-    if not text:
+    global _transcript_disabled
+    if _transcript_disabled or not text:
         return
     try:
         _TRANSCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +64,12 @@ def _append_transcript(role: Any, text: str) -> None:
         with _TRANSCRIPT_PATH.open("a", encoding="utf-8") as fh:
             fh.write(line)
     except Exception as exc:
-        logger.warning("transcript write failed: %s", exc)
+        _transcript_disabled = True
+        logger.warning(
+            "transcript write failed (%s) — transcript logging disabled for "
+            "this process",
+            exc,
+        )
 
 
 # Track source names (matching livekit TrackSource proto enum values)
@@ -132,6 +144,9 @@ def attach_session_event_loggers(session: AgentSession) -> None:
 
     @session.on("metrics_collected")
     def on_metrics_collected(ev):
+        # ponytail: only RealtimeModelMetrics carries useful signal. The
+        # event's other reports logged as "[METRICS] unknown — 0.000s" ~15x
+        # per turn and flooded the Railway logs; skip them.
         try:
             reports = getattr(ev, "metrics", None) or []
             for report in reports:
@@ -147,12 +162,6 @@ def attach_session_event_loggers(session: AgentSession) -> None:
                         report.output_tokens,
                         report.tokens_per_second,
                         report.cancelled,
-                    )
-                else:
-                    logger.info(
-                        "[METRICS] %s — duration=%.3fs",
-                        getattr(report, "type", "unknown"),
-                        getattr(report, "duration", 0.0),
                     )
         except Exception as exc:
             logger.error("Failed to log metrics: %s", exc, exc_info=True)
