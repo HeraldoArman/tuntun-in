@@ -134,6 +134,7 @@ async def speak_serialized(session: AgentSession, instructions: str) -> None:
     not_speaking = (
         userdata.get("not_speaking_event") if isinstance(userdata, dict) else None
     )
+    t0 = time.monotonic()
     try:
         # Guard 1: don't fire while the agent is mid-speech (turn reply or hazard
         # warning). Timeout-bounded so a wedged speaking state can't deadlock.
@@ -144,20 +145,49 @@ async def speak_serialized(session: AgentSession, instructions: str) -> None:
                 )
             except TimeoutError:
                 logger.warning(
-                    "speak_serialized: timed out waiting for speech to end — "
-                    "proceeding best-effort"
+                    "[SERIALIZE-RACE] speech-end wait TIMEOUT %.1fs — "
+                    "proceeding best-effort (wedged speaking state?)",
+                    time.monotonic() - t0,
                 )
+        speech_wait = time.monotonic() - t0
+        if speech_wait > 0.2:
+            logger.info(
+                "[SERIALIZE-RACE] waited %.2fs for speech to end before lock",
+                speech_wait,
+            )
         if lock is None:
             # No PriorityManager attached — degrade to an unlocked speak.
             await session.generate_reply(instructions=instructions)
             return
         # Guard 2: serialize with any other reply on this session.
         async with lock:
+            lock_wait = time.monotonic() - t0
+            if lock_wait > 0.2:
+                # >0.2s means another reply (hazard/wake/another follow-up) was
+                # holding the lock — serialization working as designed, but the
+                # follow-up is delayed. Long values starve the user's request.
+                logger.info(
+                    "[SERIALIZE-RACE] lock acquired after %.2fs (contended)",
+                    lock_wait,
+                )
             await session.generate_reply(instructions=instructions)
+        logger.info(
+            "[SERIALIZE-RACE] speak done — total=%.2fs",
+            time.monotonic() - t0,
+        )
     except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
-        logger.warning("speak_serialized: generate_reply dropped — %s", exc)
+        logger.warning(
+            "[SERIALIZE-RACE] generate_reply dropped after %.2fs — %s",
+            time.monotonic() - t0,
+            exc,
+        )
     except Exception as exc:
-        logger.error("speak_serialized: generate_reply failed — %s", exc, exc_info=True)
+        logger.error(
+            "[SERIALIZE-RACE] generate_reply failed after %.2fs — %s",
+            time.monotonic() - t0,
+            exc,
+            exc_info=True,
+        )
 
 
 class PriorityManager:
@@ -271,6 +301,13 @@ class PriorityManager:
         if hazard.priority is HazardPriority.CRITICAL:
             # Safety overrides everything — cut whatever is being said and
             # cancel any deferred MODERATE so it cannot fire after us.
+            logger.warning(
+                "[HAZARD-RACE] CRITICAL preempt — state=%s kind=%r desc=%r "
+                "(cancelling holder of reply_lock if any)",
+                state,
+                key,
+                hazard.description,
+            )
             self._cancel_deferred()
             self._last_critical_monotonic = time.monotonic()
             await self._interrupt()
@@ -321,19 +358,36 @@ class PriorityManager:
         try:
             await self._not_speaking.wait()
         except asyncio.CancelledError:
+            logger.info(
+                "[HAZARD-RACE] deferred MODERATE cancelled (CRITICAL preempted) "
+                "after %.2fs",
+                time.monotonic() - started,
+            )
             return
+        wait = time.monotonic() - started
         hazard = self._pending_moderate
         self._pending_moderate = None
         self._deferred_task = None
         if hazard is None:
+            logger.info(
+                "[HAZARD-RACE] deferred MODERATE nothing left after %.2fs wait",
+                wait,
+            )
             return  # cancelled by a CRITICAL
         # A CRITICAL fired while we were waiting — never clobber it.
         if self._last_critical_monotonic > started:
-            logger.debug(
-                "[PRIORITY] drop deferred MODERATE (CRITICAL preempted) — %r",
+            logger.info(
+                "[HAZARD-RACE] drop deferred MODERATE (CRITICAL preempted) "
+                "after %.2fs — %r",
+                wait,
                 hazard.description,
             )
             return
+        logger.info(
+            "[HAZARD-RACE] deferred MODERATE firing after %.2fs wait — %r",
+            wait,
+            hazard.description,
+        )
         # Re-check cooldown: another warning for the same kind may have fired
         # while we were waiting.
         key = hazard.kind or hazard.description
@@ -356,11 +410,28 @@ class PriorityManager:
             return
         # Hold the reply lock so the hazard reply can't race a background
         # navigator/reasoning follow-up on the same Gemini Live session.
+        t0 = time.monotonic()
         try:
             async with self._reply_lock:
+                lock_wait = time.monotonic() - t0
+                if lock_wait > 0.2:
+                    # Hazard warning blocked behind a wake/navigator/follow-up
+                    # reply. CRITICAL should have preempted via interrupt(); a
+                    # long wait here for a CRITICAL means the holder wasn't
+                    # cancelled and the safety warning was delayed.
+                    logger.warning(
+                        "[HAZARD-RACE] CRITICAL/MODERATE lock wait=%.2fs — "
+                        "safety warning delayed behind another reply",
+                        lock_wait,
+                    )
                 await self._session.generate_reply(instructions=instructions)
         except Exception as exc:
-            logger.error("[PRIORITY] generate_reply failed: %s", exc, exc_info=True)
+            logger.error(
+                "[HAZARD-RACE] generate_reply failed after %.2fs — %s",
+                time.monotonic() - t0,
+                exc,
+                exc_info=True,
+            )
 
 
 def attach_priority_manager(session: AgentSession) -> PriorityManager:

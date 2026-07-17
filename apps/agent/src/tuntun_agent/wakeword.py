@@ -313,11 +313,17 @@ class HeyTutuDetector:
         state = getattr(
             self._session.agent_state, "value", str(self._session.agent_state)
         )
-        if state in ("speaking", "thinking"):
+        preempt = state in ("speaking", "thinking")
+        if preempt:
+            logger.info(
+                "[WAKE-RACE] preempt — state=%s (holder holds reply_lock)", state
+            )
             try:
                 await self._session.interrupt()
             except Exception as exc:
                 logger.warning("Wake word: interrupt failed: %s", exc)
+        else:
+            logger.info("[WAKE-RACE] idle path — state=%s", state)
 
         instructions = (
             "The user just said your wake word 'Hey Tutu' followed by "
@@ -326,15 +332,35 @@ class HeyTutuDetector:
             "acknowledgment first — that wastes a turn. If the user only "
             "said the wake word with no request, reply with just 'Yes?'."
         )
+        t0 = time.monotonic()
         try:
             if lock is not None:
+                # Time the lock wait — >0 means a hazard/follow-up was still
+                # holding it after interrupt (interrupt didn't cancel it, or a
+                # new acquirer slipped in). Long wait here = the race is back.
                 async with lock:
+                    lock_wait = time.monotonic() - t0
+                    if lock_wait > 0.1:
+                        logger.warning(
+                            "[WAKE-RACE] lock wait=%.2fs (contended) preempt=%s",
+                            lock_wait,
+                            preempt,
+                        )
                     await self._session.generate_reply(instructions=instructions)
             else:
                 await self._session.generate_reply(instructions=instructions)
-            logger.info("Wake word: reply turn opened")
+            logger.info(
+                "Wake word: reply turn opened — total=%.2fs preempt=%s",
+                time.monotonic() - t0,
+                preempt,
+            )
         except Exception as exc:
-            logger.error("Wake word: generate_reply failed: %s", exc, exc_info=True)
+            logger.error(
+                "Wake word: generate_reply failed after %.2fs — %s",
+                time.monotonic() - t0,
+                exc,
+                exc_info=True,
+            )
 
     async def stop(self) -> None:
         """Stop all loops and clean up."""
