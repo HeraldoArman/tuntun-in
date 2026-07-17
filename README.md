@@ -1,13 +1,17 @@
-# Tuntun.In
+# 🦾 Tuntun.In
 
-A mobility companion for visually impaired pedestrians in Indonesia. A
-chest-mounted phone streams live camera + mic to a LiveKit room; a Python
-agent watches the feed, warns about street hazards with spatial audio,
-guides navigation, silently maps damaged infrastructure for other blind
-users, and escalates life-threatening danger to a linked guardian over
-WhatsApp with a live camera feed.
+> **A mobility companion that gives a chest-mounted phone the eyes and voice
+> of a trusted guide** — for visually impaired pedestrians in Indonesia.
 
-Built with Next.js + LiveKit + Gemini Live + Convex + Better-T-Auth.
+A smartphone worn on the chest streams its live camera and microphone to a
+cloud AI "agent" that watches the road, speaks instant spatial warnings
+about Indonesian street hazards (parked motorcycles, open manholes,
+potholes, drainage gutters), guides navigation, silently maps damaged
+infrastructure for other blind users, and — when danger turns
+life-threatening — escalates a live camera feed to a linked guardian over
+WhatsApp.
+
+Built with **Next.js · LiveKit · Gemini Live · Convex · Better-Auth**.
 
 ## Features
 
@@ -41,27 +45,120 @@ fast always-on reflex (spinal cord) and a slow on-demand reasoner (cortex).
 
 ```mermaid
 flowchart LR
-    Client["<b>Next.js client</b><br/>(apps/web)<br/>cam, mic, GPS, data"]
+    %% ───────── INPUT ─────────
+    Phone["📱 Chest-mounted phone<br/>camera · mic · GPS"]:::phone
 
-    subgraph Agent["Python LiveKit Agent (apps/agent)"]
+    %% ───────── TRANSPORT ─────────
+    subgraph LK["☁️ LiveKit Cloud — WebRTC"]
         direction TB
-        Reflex["<b>Reflex Layer</b> (Gemini Live)<br/>• wake-word gated conversation<br/>• navigate_to / trigger_overwatch /<br/>  report_road_hazard / reroute_..."]
-        Hazard["<b>Hazard Detection Loop</b> (gemini-flash)<br/>• samples chest frame every ~1.5s<br/>• classifies hazards → Priority Manager"]
-        Priority["<b>Priority Manager</b> (state machine)<br/>• IDLE / ACTIVE_CONVERSATION / SPEAKING<br/>• 3-level CRITICAL / MODERATE / LOW<br/>• per-hazard cooldown"]
-        Reasoning["<b>Reasoning Layer</b> (LangChain + DeepAgents)<br/>• reroute_around_hazards tool<br/>• queries crowdsourced hazard map"]
-        Reflex --> Priority
-        Hazard --> Priority
-        Reflex -. on-demand .-> Reasoning
+        RTC["real-time video + audio<br/>transport layer"]:::transport
     end
 
-    GMaps["Google Maps"]
-    Convex[("Convex<br/>hazards, overwatch,<br/>profiles, guardian links")]
+    Phone ==>|"🎥 + 🎙️ live stream"| RTC
 
-    Client -->|"video + audio"| Agent
-    Agent -->|"spatial audio"| Client
-    Agent -.-> GMaps
-    Agent <--> Convex
+    %% ───────── THE BRAIN ─────────
+    subgraph Agent["🧠 Tuntun Agent — the dual brain (apps/agent, Python)"]
+        direction TB
+
+        subgraph Reflex["⚡ Reflex Layer — fast, always-on"]
+            Wake["👂 'Hey Tutu' wake word<br/>openwakeword gate"]:::reflex
+            Gemini["Gemini Live<br/>sees + speaks · conversational<br/>guidance & navigation"]:::reflex
+            Wake --> Gemini
+        end
+
+        subgraph Eyes["👁️ Hazard Detection Loop"]
+            Frame["samples chest frame<br/>every ~1.5 s"]:::eyes
+            Classify["Gemini Flash<br/>classifies street hazards"]:::eyes
+            Frame --> Classify
+        end
+
+        Priority["⚖️ Priority Manager<br/>state machine + cooldown<br/>arbitrates ALL spoken output"]:::priority
+
+        subgraph Think["🧭 Reasoning Layer — slow, on-demand"]
+            Deep["LangChain + DeepAgents<br/>hazard-aware rerouting"]:::think
+        end
+
+        Gemini --> Priority
+        Classify --> Priority
+        Gemini -.->|"on-demand<br/>function_tool"| Deep
+        Deep -.->|"safer route"| Gemini
+    end
+
+    RTC -->|"stream in"| Reflex
+    RTC -->|"stream in"| Eyes
+
+    %% ───────── EXTERNAL SERVICES ─────────
+    GMaps["🗺️ Google Maps<br/>walking directions"]:::svc
+    Convex[("🗄️ Convex<br/>hazard reports · overwatch<br/>user + guardian profiles")]:::svc
+    GoWA["💬 GoWA<br/>WhatsApp gateway"]:::svc
+
+    %% ───────── OUTPUTS ─────────
+    Audio["🔊 Spoken spatial audio<br/>→ phone speaker"]:::audio
+    Map["📍 Public /map<br/>crowdsourced hazards"]:::mapOut
+    SOS["🚨 Overwatch SOS<br/>live link → guardian"]:::sosOut
+
+    Priority ==>|"interrupt + speak"| Audio
+    Audio -.-> RTC
+    RTC -.-> Phone
+
+    Gemini -.->|"report_road_hazard<br/>(silent)"| Convex
+    Deep -.->|"query nearby<br/>hazards"| Convex
+    Gemini -.->|"navigate_to"| GMaps
+    GMaps -.->|"route + maneuvers"| Gemini
+    Priority -.->|"critical<br/>danger"| SOS
+    SOS -.->|"spectator token"| Convex
+    SOS -.->|"WhatsApp alert"| GoWA
+    Convex -.->|"hazard data"| Map
+
+    %% ───────── STYLES (blue-dominant palette, warm accents for SOS) ─────────
+    classDef phone fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#7c2d12;
+    classDef transport fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#075985;
+    classDef reflex fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a;
+    classDef eyes fill:#cffafe,stroke:#0891b2,stroke-width:2px,color:#155e75;
+    classDef priority fill:#e0e7ff,stroke:#4f46e5,stroke-width:3px,color:#312e81;
+    classDef think fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95;
+    classDef svc fill:#f1f5f9,stroke:#475569,stroke-width:2px,color:#1e293b;
+    classDef audio fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a;
+    classDef mapOut fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef sosOut fill:#fee2e2,stroke:#dc2626,stroke-width:3px,color:#7f1d1d;
 ```
+
+#### Color legend
+
+| Color | Role |
+|---|---|
+| 🟧 amber | The user's phone — physical input (camera, mic, GPS) |
+| 🟦 light blue | LiveKit Cloud — WebRTC video + audio transport |
+| 🔵 blue | **Reflex Layer** — fast, always-on vision + voice (Gemini Live) |
+| 🩵 cyan | **Hazard Detection Loop** — continuous perception (Gemini Flash) |
+| 🟣 indigo (thick) | **Priority Manager** — arbitrates *all* spoken output |
+| 🟪 violet | **Reasoning Layer** — slow, on-demand route planning (DeepAgents) |
+| ⬜ slate | External services (Google Maps, Convex, WhatsApp gateway) |
+| 🟩 green | Crowdsourced public `/map` — hazard data for other blind users |
+| 🟥 red (thick) | **Overwatch SOS** — live-camera escalation to a guardian |
+
+> **Arrow types:** solid `→` = live media stream, thick `==>` = primary
+> spoken output, dashed `-.->` = on-demand tool calls / data queries.
+
+### How it works (in plain English)
+
+Tuntun.In turns a phone into a pair of smart eyes and ears, worn on the
+chest. Three things happen at once:
+
+1. **It watches** — a fast, always-on AI (the *Reflex Layer*) sees the road
+   through the camera and, in under a second, speaks warnings out loud:
+   *"manhole ahead, step right."*
+2. **It thinks** — a slower, on-demand AI (the *Reasoning Layer*) plans
+   walking routes that steer around known hazards, but only when asked.
+3. **It protects** — when the agent detects life-threatening danger, it
+   automatically texts a live-camera link to a family guardian over
+   WhatsApp so they can guide the user verbally. Every hazard it spots is
+   also quietly logged to a shared public map so other blind pedestrians
+   can avoid the same bad road.
+
+> Think of it as a nervous system: a fast **spinal-cord reflex** for instant
+> danger, and a slow **cortex** for route planning — never blocking the
+> safety-critical path.
 
 **Two trigger sources, one output channel.** Reactive conversation opens via
 the "Hey Tutu" wake word (`turn_detection="manual"` — the agent ignores
