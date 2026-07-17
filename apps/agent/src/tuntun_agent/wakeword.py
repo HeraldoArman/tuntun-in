@@ -235,8 +235,10 @@ class HeyTutuDetector:
             async for frame in self._audio_stream:
                 if self._stopped:
                     break
-                # frame.data is int16 PCM at 16 kHz mono.
-                pcm = np.frombuffer(frame.data, dtype=np.int16)
+                # AudioStream yields AudioFrameEvent; the int16 PCM lives on
+                # the wrapped AudioFrame at .frame.data (16 kHz mono here).
+                audio_frame = frame.frame if hasattr(frame, "frame") else frame
+                pcm = np.frombuffer(audio_frame.data, dtype=np.int16)
                 self._pcm_buffer = np.concatenate([self._pcm_buffer, pcm])
                 # Process full 1280-sample chunks.
                 while len(self._pcm_buffer) >= _OPENWAKEWORD_CHUNK_SAMPLES:
