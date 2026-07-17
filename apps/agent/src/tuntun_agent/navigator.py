@@ -17,6 +17,7 @@ import httpx
 from livekit.agents import AgentSession
 
 from tuntun_agent.logging_setup import get_logger
+from tuntun_agent.priority import speak_serialized
 
 logger = get_logger()
 
@@ -279,24 +280,26 @@ async def fetch_route_and_reply(
 
     resolved = await _resolve_destination(api_key, origin, destination)
     if resolved is None:
-        await session.generate_reply(
-            instructions=(
+        await speak_serialized(
+            session,
+            (
                 f"Tell the user briefly in English that you could not find a "
                 f"place called '{destination}' on the map, and ask them to "
                 f"repeat or rephrase it. One short sentence."
-            )
+            ),
         )
         return
     dest_coords, dest_name = resolved
 
     steps = await _directions(api_key, origin, dest_coords)
     if not steps:
-        await session.generate_reply(
-            instructions=(
+        await speak_serialized(
+            session,
+            (
                 f"Tell the user briefly in English that you could not compute "
                 f"a walking route to '{dest_name}' right now. One short "
                 f"sentence, calm tone."
-            )
+            ),
         )
         return
 
@@ -317,28 +320,27 @@ async def fetch_route_and_reply(
         first["instruction"],
     )
 
-    await session.generate_reply(
-        instructions=(
-            "You are guiding a visually impaired user and you can see their "
-            "live chest-mounted camera feed. A walking route was just fetched. "
-            f"Route to '{dest_name}':\n{steps_block}\n\n"
-            "Translate the FIRST maneuver into tangible, landmark-based "
-            "guidance the user can actually follow without a compass.\n"
-            "DIRECTION RULES (critical — the user is blind):\n"
-            "- NEVER use cardinal directions: north, south, east, west, "
-            "northeast, northwest, etc. The user cannot face a compass.\n"
-            "- Use ONLY body-relative directions: 'ahead / straight', "
-            "'left', 'right', 'slightly left/right', 'turn around', or the "
-            "clock face relative to where they currently face "
-            "('bear toward 10 o'clock', 'sharp right at 3 o'clock').\n"
-            "- Anchor the turn to something visible in the camera right now "
-            "(a food cart, pole, sign, building color, parked vehicle, "
-            "doorway). Only fall back to the metric distance if no usable "
-            "landmark is visible, and even then phrase it as steps/paces, "
-            "not a compass heading.\n"
-            "Keep it to one short, clear sentence in English. Example style: "
-            "'Walk straight ahead, then turn left just past the blue food "
-            "cart.' — NEVER 'Head northeast for 9 meters.'\n\n"
-            f"Route summary for your reference: {route_summary}"
-        )
+    await speak_serialized(
+        session,
+        "You are guiding a visually impaired user and you can see their "
+        "live chest-mounted camera feed. A walking route was just fetched. "
+        f"Route to '{dest_name}':\n{steps_block}\n\n"
+        "Translate the FIRST maneuver into tangible, landmark-based "
+        "guidance the user can actually follow without a compass.\n"
+        "DIRECTION RULES (critical — the user is blind):\n"
+        "- NEVER use cardinal directions: north, south, east, west, "
+        "northeast, northwest, etc. The user cannot face a compass.\n"
+        "- Use ONLY body-relative directions: 'ahead / straight', "
+        "'left', 'right', 'slightly left/right', 'turn around', or the "
+        "clock face relative to where they currently face "
+        "('bear toward 10 o'clock', 'sharp right at 3 o'clock').\n"
+        "- Anchor the turn to something visible in the camera right now "
+        "(a food cart, pole, sign, building color, parked vehicle, "
+        "doorway). Only fall back to the metric distance if no usable "
+        "landmark is visible, and even then phrase it as steps/paces, "
+        "not a compass heading.\n"
+        "Keep it to one short, clear sentence in English. Example style: "
+        "'Walk straight ahead, then turn left just past the blue food "
+        "cart.' — NEVER 'Head northeast for 9 meters.'\n\n"
+        f"Route summary for your reference: {route_summary}",
     )

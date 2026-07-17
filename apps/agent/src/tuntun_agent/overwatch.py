@@ -32,6 +32,7 @@ from livekit.agents import AgentSession
 from tuntun_agent.convex import get_convex_client
 from tuntun_agent.crowdsource import _encode_jpeg
 from tuntun_agent.logging_setup import get_logger
+from tuntun_agent.priority import speak_serialized
 
 logger = get_logger()
 
@@ -332,21 +333,19 @@ async def trigger_overwatch_flow(session: AgentSession, reason: str) -> None:
     profile_id = userdata.get("profileId")
     if not room_name:
         logger.error("Overwatch: no roomName in userdata — aborting")
-        await session.generate_reply(
-            instructions=(
-                "Tell the user briefly in English that you tried to alert their "
-                "guardian but could not identify the session. One short sentence."
-            )
+        await speak_serialized(
+            session,
+            "Tell the user briefly in English that you tried to alert their "
+            "guardian but could not identify the session. One short sentence.",
         )
         return
     if not profile_id:
         logger.error("Overwatch: no profileId in userdata — aborting")
-        await session.generate_reply(
-            instructions=(
-                "Tell the user briefly in English that you want to alert their "
-                "guardian but cannot identify their account, and ask them to "
-                "make sure they are logged in. One short sentence."
-            )
+        await speak_serialized(
+            session,
+            "Tell the user briefly in English that you want to alert their "
+            "guardian but cannot identify their account, and ask them to "
+            "make sure they are logged in. One short sentence.",
         )
         return
 
@@ -354,12 +353,11 @@ async def trigger_overwatch_flow(session: AgentSession, reason: str) -> None:
     spectator_url = build_spectator_url(token, room_name) if token else None
     if not spectator_url:
         logger.error("Overwatch: could not build spectator URL — aborting WhatsApp")
-        await session.generate_reply(
-            instructions=(
-                "Tell the user briefly in English that you detected a critical "
-                "danger and want to alert their guardian, but the live-view link "
-                "is not configured. One short, calm sentence."
-            )
+        await speak_serialized(
+            session,
+            "Tell the user briefly in English that you detected a critical "
+            "danger and want to alert their guardian, but the live-view link "
+            "is not configured. One short, calm sentence.",
         )
         return
 
@@ -404,31 +402,28 @@ async def trigger_overwatch_flow(session: AgentSession, reason: str) -> None:
     # already issued by the agent before calling the tool — this is the
     # "help is connecting" reassurance.
     if guardian_number and whatsapp_sent:
-        await session.generate_reply(
-            instructions=(
-                f"You just detected critical danger: {reason}. Tell the user "
-                f"briefly and calmly in English that you have alerted their "
-                f"guardian {guardian_name or ''} by WhatsApp and that their "
-                f"guardian can now see their camera and guide them. Reassure "
-                f"them. One or two short sentences."
-            )
+        await speak_serialized(
+            session,
+            f"You just detected critical danger: {reason}. Tell the user "
+            f"briefly and calmly in English that you have alerted their "
+            f"guardian {guardian_name or ''} by WhatsApp and that their "
+            f"guardian can now see their camera and guide them. Reassure "
+            f"them. One or two short sentences.",
         )
     elif guardian_number and not whatsapp_sent:
-        await session.generate_reply(
-            instructions=(
-                f"You just detected critical danger: {reason}. Tell the user "
-                f"briefly in English that you tried to alert their guardian "
-                f"{guardian_name or ''} but the message could not be sent right "
-                f"now. Stay calm and keep moving carefully. One short sentence."
-            )
+        await speak_serialized(
+            session,
+            f"You just detected critical danger: {reason}. Tell the user "
+            f"briefly in English that you tried to alert their guardian "
+            f"{guardian_name or ''} but the message could not be sent right "
+            f"now. Stay calm and keep moving carefully. One short sentence.",
         )
     else:
-        await session.generate_reply(
-            instructions=(
-                f"You just detected critical danger: {reason}. Tell the user "
-                f"briefly in English that you triggered an Overwatch alert but "
-                f"no guardian is linked to their account yet, so they should "
-                f"add a family member as a guardian in the app settings. One "
-                f"short, calm sentence."
-            )
+        await speak_serialized(
+            session,
+            f"You just detected critical danger: {reason}. Tell the user "
+            f"briefly in English that you triggered an Overwatch alert but "
+            f"no guardian is linked to their account yet, so they should "
+            f"add a family member as a guardian in the app settings. One "
+            f"short, calm sentence.",
         )

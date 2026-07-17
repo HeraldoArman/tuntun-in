@@ -28,6 +28,7 @@ from livekit.agents import AgentSession
 
 from tuntun_agent.convex import get_convex_client
 from tuntun_agent.logging_setup import get_logger
+from tuntun_agent.priority import speak_serialized
 
 logger = get_logger()
 
@@ -145,19 +146,17 @@ async def compute_detour(
             "I could not work out a detour right now — please proceed carefully."
         )
         logger.info("Reasoning: detour advisory len=%d", len(advisory))
-        await session.generate_reply(
-            instructions=(
-                "You are guiding a blind pedestrian. Speak this detour advisory "
-                f"to the user clearly and calmly in English, in your own words: "
-                f"{advisory}"
-            )
+        await speak_serialized(
+            session,
+            "You are guiding a blind pedestrian. Speak this detour advisory "
+            f"to the user clearly and calmly in English, in your own words: "
+            f"{advisory}",
         )
     except Exception as exc:
         logger.error("Reasoning: detour failed: %s", exc, exc_info=True)
-        await session.generate_reply(
-            instructions=(
-                "Tell the user briefly in English that you could not check the "
-                "route for known hazards right now, and to proceed carefully. "
-                "One short sentence."
-            )
+        await speak_serialized(
+            session,
+            "Tell the user briefly in English that you could not check the "
+            "route for known hazards right now, and to proceed carefully. "
+            "One short sentence.",
         )

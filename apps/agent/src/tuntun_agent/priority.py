@@ -85,31 +85,53 @@ def _design_state(livekit_state: str) -> str:
 def _hazard_instructions(hazard: Hazard, urgent: bool) -> str:
     """Build the generate_reply instruction for a spoken hazard warning.
 
-    The agent has the live chest-camera feed, so it must VERIFY the classifier's
-    claim against the frame before speaking — a cheap vision model can
-    hallucinate a pothole that isn't there. It must also avoid fabricated
-    steering ("keep to the center") that could guide the user into something it
-    didn't check, and vary its wording so warnings don't sound templated.
+    Kept text-only + fast: the spoken reply must be quick so it does not hold
+    the per-session reply lock and starve a background navigator/reasoning
+    follow-up (which would re-introduce the 60s silence). Hallucination is
+    handled at the classifier layer (it has the frame and runs cheaply per
+    tick), not here. The only rules here are cheap text rules: no fabricated
+    steering, and rephrase so warnings don't sound templated.
     """
     tone = "urgent and sharp" if urgent else "calm and matter-of-fact"
     return (
-        f"A hazard detector reported: {hazard.description} (category: {hazard.kind}). "
-        f"Before speaking, LOOK at your live camera frame right now and VERIFY this "
-        f"is actually visible in the user's path.\n"
-        f"- If you CANNOT clearly see it in the frame, DO NOT announce a specific "
-        f"obstacle. Say nothing, or at most a brief, vague 'careful with your step' "
-        f"without naming anything. A false warning is dangerous.\n"
-        f"- If it IS visible: state WHAT it is and WHERE (left / center / right / "
-        f"ahead) in one short sentence. Give a distance only if you can actually "
-        f"estimate it from the frame.\n"
-        f"- DO NOT invent steering like 'keep to the center' or 'move left' unless "
-        f"you can clearly see, in the frame right now, that the suggested side is "
-        f"actually free of obstacles. If you can't confirm a safe direction, just "
-        f"name the obstacle and its location — let the user choose.\n"
-        f"- Vary your wording. Do not repeat the same templated phrase (e.g. "
-        f"'{hazard.description}') verbatim — rephrase naturally each time.\n"
+        f"A hazard was detected in the user's path: {hazard.description} "
+        f"(category: {hazard.kind}). Warn the user in ONE short English "
+        f"sentence: state WHAT it is and WHERE (left / center / right / ahead), "
+        f"and a distance only if one was given in the description.\n"
+        f"- Do NOT invent steering like 'keep to the center' or 'move left' — "
+        f"you cannot see a safe side from this text alone. Just name the "
+        f"obstacle and its location; let the user choose which way to go.\n"
+        f"- Rephrase naturally. Do NOT repeat the description verbatim.\n"
         f"Tone: {tone}. English. One short sentence."
     )
+
+
+async def speak_serialized(session: AgentSession, instructions: str) -> None:
+    """Speak a background follow-up via generate_reply, serialized by the
+    per-session reply lock so it cannot race the hazard loop (or another
+    follow-up) on the same Gemini Live session.
+
+    Without serialization, concurrent generate_reply calls on a manual-turn
+    session race and the loser times out waiting for generation_created — the
+    user then hears silence for 60s while the route/detour reply is dropped.
+    Best-effort: dead-session (RuntimeError), timeout, and cancellation errors
+    are logged and swallowed, never raised into the background task.
+    """
+    lock = None
+    userdata = getattr(session, "userdata", None)
+    if isinstance(userdata, dict):
+        lock = userdata.get("reply_lock")
+    try:
+        if lock is None:
+            # No PriorityManager attached — degrade to an unlocked speak.
+            await session.generate_reply(instructions=instructions)
+            return
+        async with lock:
+            await session.generate_reply(instructions=instructions)
+    except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
+        logger.warning("speak_serialized: generate_reply dropped — %s", exc)
+    except Exception as exc:
+        logger.error("speak_serialized: generate_reply failed — %s", exc, exc_info=True)
 
 
 class PriorityManager:
@@ -124,6 +146,14 @@ class PriorityManager:
         self._session = session
         self._last_warned: dict[str, float] = {}
         self._livekit_state = "idle"
+        # Serializes every generate_reply on this session. Gemini Live runs one
+        # generation at a time on a manual-turn session; without a lock, the
+        # hazard loop's reply and a background follow-up (navigator route,
+        # reasoning detour) race and the loser times out waiting for
+        # generation_created -> the user hears silence for 60s. Hazards still
+        # preempt via interrupt() (cancels the holder; the lock releases on the
+        # raised CancelledError), so CRITICAL safety is never blocked.
+        self._reply_lock = asyncio.Lock()
         # Set when NOT speaking, cleared when speaking. lets a deferred
         # MODERATE hazard wait for the end of the current speech before firing.
         self._not_speaking = asyncio.Event()
@@ -298,8 +328,11 @@ class PriorityManager:
     async def _speak(self, instructions: str) -> None:
         if self._stopped:
             return
+        # Hold the reply lock so the hazard reply can't race a background
+        # navigator/reasoning follow-up on the same Gemini Live session.
         try:
-            await self._session.generate_reply(instructions=instructions)
+            async with self._reply_lock:
+                await self._session.generate_reply(instructions=instructions)
         except Exception as exc:
             logger.error("[PRIORITY] generate_reply failed: %s", exc, exc_info=True)
 
@@ -308,9 +341,14 @@ def attach_priority_manager(session: AgentSession) -> PriorityManager:
     """Create a PriorityManager for the session and wire its state tracker.
 
     Returns the manager so the caller can feed it hazards (e.g. from the
-    hazard detection loop).
+    hazard detection loop). Also publishes the per-session reply lock on
+    session.userdata["reply_lock"] so background follow-ups (navigator,
+    reasoning) can serialize their generate_reply calls through the same lock.
     """
     pm = PriorityManager(session)
     pm.attach(session)
+    userdata = getattr(session, "userdata", None)
+    if isinstance(userdata, dict):
+        userdata["reply_lock"] = pm._reply_lock
     logger.info("PriorityManager attached — cooldown=%.1fs", _COOLDOWN)
     return pm
