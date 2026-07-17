@@ -1,8 +1,9 @@
 "use client";
 
 import { Button } from "@tuntun-in/ui/components/button";
-import { ArrowRight, ChevronRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
+import Image from "next/image";
 import Link from "next/link";
 import { siConvex, siGooglegemini, siLivekit, siNextdotjs } from "simple-icons";
 import { Mascot } from "@/modules/landing/mascot";
@@ -136,15 +137,13 @@ export function Hero() {
         >
           <div className="relative mx-auto max-w-6xl overflow-hidden rounded-2xl border bg-background p-4 shadow-lg ring-1 ring-background">
             <div className="relative flex aspect-15/8 items-center justify-center rounded-2xl border border-border/25 bg-gradient-to-b from-muted/50 to-background">
-              {/* Mockup placeholder — TODO: replace with real app screenshot */}
-              <div className="flex flex-col items-center gap-4 py-20">
-                <div className="flex size-16 items-center justify-center rounded-2xl border bg-muted">
-                  <ChevronRight className="size-8 text-muted-foreground" />
-                </div>
-                <p className="text-muted-foreground text-sm">
-                  App preview will appear here
-                </p>
-              </div>
+              <Image
+                alt="App preview"
+                className="size-full object-contain p-4"
+                height={800}
+                src="/mock.png"
+                width={1500}
+              />
             </div>
           </div>
         </motion.div>
