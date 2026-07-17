@@ -131,28 +131,33 @@ async def speak_serialized(session: AgentSession, instructions: str) -> None:
     """
     userdata = getattr(session, "userdata", None)
     lock = userdata.get("reply_lock") if isinstance(userdata, dict) else None
+    # Prefer idle_event (true IDLE = turn reply done) over not_speaking_event
+    # (set during `thinking` too — waiting on it races LiveKit's own turn
+    # reply). Falls back to not_speaking_event if idle_event isn't published.
+    idle_event = userdata.get("idle_event") if isinstance(userdata, dict) else None
     not_speaking = (
         userdata.get("not_speaking_event") if isinstance(userdata, dict) else None
     )
+    wait_event = idle_event or not_speaking
     t0 = time.monotonic()
     try:
-        # Guard 1: don't fire while the agent is mid-speech (turn reply or hazard
-        # warning). Timeout-bounded so a wedged speaking state can't deadlock.
-        if not_speaking is not None:
+        # Guard 1: don't fire while the agent is mid-turn (turn reply in flight
+        # or speaking). Timeout-bounded so a wedged state can't deadlock.
+        if wait_event is not None:
             try:
                 await asyncio.wait_for(
-                    not_speaking.wait(), timeout=_WAIT_SPEECH_END_TIMEOUT
+                    wait_event.wait(), timeout=_WAIT_SPEECH_END_TIMEOUT
                 )
             except TimeoutError:
                 logger.warning(
-                    "[SERIALIZE-RACE] speech-end wait TIMEOUT %.1fs — "
-                    "proceeding best-effort (wedged speaking state?)",
+                    "[SERIALIZE-RACE] idle/speech-end wait TIMEOUT %.1fs — "
+                    "proceeding best-effort (wedged state?)",
                     time.monotonic() - t0,
                 )
         speech_wait = time.monotonic() - t0
         if speech_wait > 0.2:
             logger.info(
-                "[SERIALIZE-RACE] waited %.2fs for speech to end before lock",
+                "[SERIALIZE-RACE] waited %.2fs for idle before lock",
                 speech_wait,
             )
         if lock is None:
@@ -214,6 +219,16 @@ class PriorityManager:
         # MODERATE hazard wait for the end of the current speech before firing.
         self._not_speaking = asyncio.Event()
         self._not_speaking.set()
+        # Set when the session is truly IDLE (no user turn in flight, agent not
+        # speaking/thinking). A deferred MODERATE waits on THIS, not
+        # ``_not_speaking``: ``_not_speaking`` is set during ``thinking`` too
+        # (LiveKit generating the user's turn reply), so waiting on it would
+        # fire our hazard generate_reply mid-turn and race LiveKit's own turn
+        # reply (which does NOT take reply_lock) -> generation_created timeout
+        # -> user hears silence and repeats the wake word. Waiting for IDLE
+        # guarantees the turn reply is done before we speak.
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()
         # Deferred MODERATE state: when a MODERATE hazard arrives while the
         # agent is speaking, we must NOT block the perception loop on
         # wait_for_speech_end (that would stall the hazard loop and delay a
@@ -257,6 +272,15 @@ class PriorityManager:
                 self._not_speaking.clear()
             elif old == "speaking":
                 self._not_speaking.set()
+            # _idle_event tracks the true IDLE design state. Set only when we
+            # land in IDLE (initializing/idle); cleared the moment we leave it
+            # for ACTIVE_CONVERSATION or SPEAKING. See __init__ for why the
+            # deferred MODERATE waits on this instead of _not_speaking.
+            new_design = _design_state(new)
+            if new_design == STATE_IDLE:
+                self._idle_event.set()
+            else:
+                self._idle_event.clear()
             logger.debug(
                 "[PRIORITY] state %s -> %s (design=%s)",
                 old,
@@ -313,11 +337,20 @@ class PriorityManager:
             await self._interrupt()
             await self._speak(_hazard_instructions(hazard, urgent=True))
         elif hazard.priority is HazardPriority.MODERATE:
-            if state == STATE_SPEAKING:
-                # Do NOT block the perception loop on wait_for_speech_end —
-                # that would stall the hazard loop and delay a later CRITICAL.
-                # Defer: the latest MODERATE fires once speech ends, unless a
-                # CRITICAL preempts it first.
+            if state != STATE_IDLE:
+                # Defer while the user's turn is in flight (ACTIVE_CONVERSATION)
+                # OR the agent is speaking. Firing a MODERATE generate_reply
+                # here would clobber/race LiveKit's own turn reply (which does
+                # NOT take reply_lock) -> generation_created timeout -> the
+                # user hears silence and repeats the wake word 5+ times. The
+                # deferred waiter holds for IDLE (turn fully done) so we speak
+                # right after, not mid-turn. CRITICAL still preempts via
+                # interrupt() — only MODERATE/LOW yield to the user's turn.
+                logger.info(
+                    "[HAZARD-RACE] defer MODERATE — state=%s kind=%r (wait for IDLE)",
+                    state,
+                    key,
+                )
                 self._defer_moderate(hazard)
                 return
             await self._interrupt()
@@ -353,10 +386,15 @@ class PriorityManager:
 
     async def _deferred_moderate_speak(self) -> None:
         """Background waiter: speak the latest deferred MODERATE once the
-        current speech ends, unless a CRITICAL preempted it while waiting."""
+        session is truly IDLE (user's turn reply finished), unless a CRITICAL
+        preempted it while waiting.
+
+        Waits on ``_idle_event`` (not ``_not_speaking``) so the turn reply
+        completes first — see __init__ for why this is what closes the race.
+        """
         started = time.monotonic()
         try:
-            await self._not_speaking.wait()
+            await self._idle_event.wait()
         except asyncio.CancelledError:
             logger.info(
                 "[HAZARD-RACE] deferred MODERATE cancelled (CRITICAL preempted) "
@@ -455,5 +493,6 @@ def attach_priority_manager(session: AgentSession) -> PriorityManager:
     if isinstance(userdata, dict):
         userdata["reply_lock"] = pm._reply_lock
         userdata["not_speaking_event"] = pm._not_speaking
+        userdata["idle_event"] = pm._idle_event
     logger.info("PriorityManager attached — cooldown=%.1fs", _COOLDOWN)
     return pm
