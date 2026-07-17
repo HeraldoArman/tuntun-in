@@ -60,12 +60,28 @@ _HAZARD_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "description": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "step_down",
+                            "pothole",
+                            "open_manhole",
+                            "drainage_gutter",
+                            "excavation_pit",
+                            "vehicle",
+                            "motorcycle_parked",
+                            "construction_barrier",
+                            "low_obstruction",
+                            "uneven_pavement",
+                            "other",
+                        ],
+                    },
                     "priority": {
                         "type": "string",
                         "enum": ["critical", "moderate", "low"],
                     },
                 },
-                "required": ["description", "priority"],
+                "required": ["description", "kind", "priority"],
             },
         }
     },
@@ -74,16 +90,27 @@ _HAZARD_SCHEMA: dict[str, Any] = {
 
 _CLASSIFY_PROMPT = (
     "You are a street-hazard detector for a blind user wearing a chest-mounted "
-    "camera walking in Indonesia. Look at this frame and detect hazards in the "
-    "user's direct path. Classify each one:\n"
+    "camera walking in Indonesia. Look at this ONE frame and detect ONLY hazards "
+    "that are unambiguously visible AND in the user's direct walking path within "
+    "about 3 meters. Classify each one:\n"
     "- critical: imminent life-threatening danger — a fall, an excavation pit / "
     "deep hole about to be stepped into, an oncoming vehicle on collision course.\n"
     "- moderate: obstacle in the path needing action now — open manhole, pothole, "
     "steps/drop, drainage gutter, blocked sidewalk, construction barrier.\n"
     "- low: minor additional info — uneven pavement, low-hanging banner/awning, "
     "hanging wires, a parked motorcycle on the sidewalk.\n"
-    "Return JSON {hazards:[{description,priority}]}. Use a short spatial "
-    "description (e.g. 'open manhole 2m ahead center', 'motorcycle on left').\n"
+    "Return JSON {hazards:[{description,kind,priority}]}. `kind` is a stable "
+    "category from the enum — use it so the same physical hazard is deduped "
+    "across frames. `description` is a short spatial note (e.g. 'open manhole "
+    "2m ahead center', 'motorcycle on left').\n"
+    "ANTI-HALLUCINATION RULES (critical — a false warning is dangerous):\n"
+    "- Only report a hazard you can point to in this frame. Do NOT infer a "
+    "hazard from shadows, wet patches, discoloration, blurriness, or texture.\n"
+    "- A shadow or a dark patch on the ground is NOT a pothole. A seam between "
+    "paving slabs is NOT a step down. A change in surface color is NOT a drop.\n"
+    "- If the same flat, continuous walking surface extends ahead with no "
+    "obvious vertical drop or obstacle, that is a CLEAR path — return an empty "
+    "array. Do not invent 'uneven pavement' or 'step down' on a normal sidewalk.\n"
     "RETURN AN EMPTY hazards ARRAY when any of these hold — do not invent a "
     "hazard to fill the silence:\n"
     "- the image is dark, black, underexposed, or the camera appears covered;\n"
@@ -92,8 +119,8 @@ _CLASSIFY_PROMPT = (
     "- no street, sidewalk, path, or ground is visible (e.g. indoor, a wall, "
     "sky only, a person's face or body filling the frame with no walking path);\n"
     "- the path ahead is clear and unobstructed.\n"
-    "Never describe a hazard you cannot visually locate in the frame. If in "
-    "doubt, return an empty array."
+    "When in ANY doubt, return an empty array. Silence is safer than a false "
+    "warning for a blind walker."
 )
 
 
@@ -212,7 +239,8 @@ class HazardLoop:
             priority = _PRIORITY_MAP.get(
                 str(item.get("priority", "")).lower(), HazardPriority.LOW
             )
-            out.append(Hazard(description=desc, priority=priority))
+            kind = str(item.get("kind", "")).strip().lower() or "other"
+            out.append(Hazard(description=desc, priority=priority, kind=kind))
         return out
 
     async def stop(self) -> None:

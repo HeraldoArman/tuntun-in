@@ -42,8 +42,10 @@ from tuntun_agent.logging_setup import get_logger
 
 logger = get_logger()
 
-# Seconds before the same hazard (by description key) may warn again.
-_COOLDOWN = 5.0
+# Seconds before the same hazard (by kind) may warn again. Dedup is by stable
+# `kind`, not the free-text description, so a rephrased detection of the same
+# physical hazard does not re-fire every few seconds.
+_COOLDOWN = 8.0
 
 
 class HazardPriority(Enum):
@@ -58,6 +60,10 @@ class Hazard:
 
     description: str
     priority: HazardPriority
+    # Stable category (e.g. "pothole", "step_down") from the classifier. Used as
+    # the cooldown key so the same physical hazard is not re-announced every
+    # frame just because the free-text description changed wording.
+    kind: str = "other"
 
 
 # Design-doc states, derived from LiveKit's AgentState
@@ -74,6 +80,36 @@ def _design_state(livekit_state: str) -> str:
     if livekit_state in ("listening", "thinking"):
         return STATE_ACTIVE_CONVERSATION
     return STATE_IDLE  # initializing / idle
+
+
+def _hazard_instructions(hazard: Hazard, urgent: bool) -> str:
+    """Build the generate_reply instruction for a spoken hazard warning.
+
+    The agent has the live chest-camera feed, so it must VERIFY the classifier's
+    claim against the frame before speaking — a cheap vision model can
+    hallucinate a pothole that isn't there. It must also avoid fabricated
+    steering ("keep to the center") that could guide the user into something it
+    didn't check, and vary its wording so warnings don't sound templated.
+    """
+    tone = "urgent and sharp" if urgent else "calm and matter-of-fact"
+    return (
+        f"A hazard detector reported: {hazard.description} (category: {hazard.kind}). "
+        f"Before speaking, LOOK at your live camera frame right now and VERIFY this "
+        f"is actually visible in the user's path.\n"
+        f"- If you CANNOT clearly see it in the frame, DO NOT announce a specific "
+        f"obstacle. Say nothing, or at most a brief, vague 'careful with your step' "
+        f"without naming anything. A false warning is dangerous.\n"
+        f"- If it IS visible: state WHAT it is and WHERE (left / center / right / "
+        f"ahead) in one short sentence. Give a distance only if you can actually "
+        f"estimate it from the frame.\n"
+        f"- DO NOT invent steering like 'keep to the center' or 'move left' unless "
+        f"you can clearly see, in the frame right now, that the suggested side is "
+        f"actually free of obstacles. If you can't confirm a safe direction, just "
+        f"name the obstacle and its location — let the user choose.\n"
+        f"- Vary your wording. Do not repeat the same templated phrase (e.g. "
+        f"'{hazard.description}') verbatim — rephrase naturally each time.\n"
+        f"Tone: {tone}. English. One short sentence."
+    )
 
 
 class PriorityManager:
@@ -155,13 +191,13 @@ class PriorityManager:
         MODERATE is cancelled if a CRITICAL arrives while it is waiting, so a
         non-critical warning can never clobber a life-threatening one.
         """
-        key = hazard.description
+        key = hazard.kind or hazard.description
         now = time.monotonic()
         if self._stopped:
             return
         if now - self._last_warned.get(key, 0.0) < _COOLDOWN:
             logger.debug(
-                "[PRIORITY] skip (cooldown) — %r priority=%s",
+                "[PRIORITY] skip (cooldown) — kind=%r priority=%s",
                 key,
                 hazard.priority.value,
             )
@@ -169,10 +205,11 @@ class PriorityManager:
 
         state = self.design_state
         logger.info(
-            "[PRIORITY] hazard — priority=%s state=%s desc=%r",
+            "[PRIORITY] hazard — priority=%s state=%s kind=%r desc=%r",
             hazard.priority.value,
             state,
             key,
+            hazard.description,
         )
 
         if hazard.priority is HazardPriority.CRITICAL:
@@ -181,7 +218,7 @@ class PriorityManager:
             self._cancel_deferred()
             self._last_critical_monotonic = time.monotonic()
             await self._interrupt()
-            await self._speak(f"PERINGATAN SEGERA: {hazard.description}")
+            await self._speak(_hazard_instructions(hazard, urgent=True))
         elif hazard.priority is HazardPriority.MODERATE:
             if state == STATE_SPEAKING:
                 # Do NOT block the perception loop on wait_for_speech_end —
@@ -191,12 +228,12 @@ class PriorityManager:
                 self._defer_moderate(hazard)
                 return
             await self._interrupt()
-            await self._speak(f"Peringatan: {hazard.description}")
+            await self._speak(_hazard_instructions(hazard, urgent=False))
         else:  # LOW
             if state == STATE_IDLE:
-                await self._speak(hazard.description)
+                await self._speak(_hazard_instructions(hazard, urgent=False))
             else:
-                logger.debug("[PRIORITY] skip LOW (agent busy) — %r", key)
+                logger.debug("[PRIORITY] skip LOW (agent busy) — kind=%r", key)
                 # Not spoken: do NOT stamp cooldown, so it can fire once idle.
                 return
 
@@ -241,16 +278,14 @@ class PriorityManager:
                 hazard.description,
             )
             return
-        # Re-check cooldown: another warning for the same key may have fired
+        # Re-check cooldown: another warning for the same kind may have fired
         # while we were waiting.
-        if (
-            time.monotonic() - self._last_warned.get(hazard.description, 0.0)
-            < _COOLDOWN
-        ):
+        key = hazard.kind or hazard.description
+        if time.monotonic() - self._last_warned.get(key, 0.0) < _COOLDOWN:
             return
         await self._interrupt()
-        await self._speak(f"Peringatan: {hazard.description}")
-        self._last_warned[hazard.description] = time.monotonic()
+        await self._speak(_hazard_instructions(hazard, urgent=False))
+        self._last_warned[key] = time.monotonic()
 
     async def _interrupt(self) -> None:
         if self._stopped:
