@@ -292,27 +292,46 @@ class HeyTutuDetector:
         ``generate_reply`` answers the request directly. The user should say the
         wake word + their request in one utterance ('Hey Tutu, what's ahead?').
         If they only said the wake word, fall back to a short 'Yes?'.
+
+        Race guard: the hazard loop's ``generate_reply`` holds the per-session
+        ``reply_lock`` while it is generating (LiveKit state ``thinking``, not
+        ``speaking``). If we fire our own ``generate_reply`` raw here, the two
+        collide on the same Gemini Live session and the loser times out waiting
+        for ``generation_created`` → the user hears silence and repeats the wake
+        word 5+ times until the hazard loop happens to be idle. So we (1) preempt
+        by interrupting when the agent is speaking OR thinking — the holder's
+        ``generate_reply`` raises CancelledError and releases the lock — and
+        (2) acquire the same ``reply_lock`` before generating. Idle wake case
+        is unchanged: no interrupt, lock is free, reply fires immediately.
         """
-        # Only interrupt if the agent is currently speaking — when idle (the
-        # common wake case) interrupt is a wasted round trip.
+        userdata = getattr(self._session, "userdata", None)
+        lock = userdata.get("reply_lock") if isinstance(userdata, dict) else None
+
+        # Preempt any in-flight generation (hazard reply holding the lock while
+        # thinking, or speaking). interrupt() cancels the holder's
+        # generate_reply → CancelledError → lock releases, so we don't wait on it.
         state = getattr(
             self._session.agent_state, "value", str(self._session.agent_state)
         )
-        if state == "speaking":
+        if state in ("speaking", "thinking"):
             try:
                 await self._session.interrupt()
             except Exception as exc:
                 logger.warning("Wake word: interrupt failed: %s", exc)
+
+        instructions = (
+            "The user just said your wake word 'Hey Tutu' followed by "
+            "their request. Answer their request directly and concisely "
+            "in one short reply. Do NOT say 'yes', 'I'm here', or any "
+            "acknowledgment first — that wastes a turn. If the user only "
+            "said the wake word with no request, reply with just 'Yes?'."
+        )
         try:
-            await self._session.generate_reply(
-                instructions=(
-                    "The user just said your wake word 'Hey Tutu' followed by "
-                    "their request. Answer their request directly and concisely "
-                    "in one short reply. Do NOT say 'yes', 'I'm here', or any "
-                    "acknowledgment first — that wastes a turn. If the user only "
-                    "said the wake word with no request, reply with just 'Yes?'."
-                ),
-            )
+            if lock is not None:
+                async with lock:
+                    await self._session.generate_reply(instructions=instructions)
+            else:
+                await self._session.generate_reply(instructions=instructions)
             logger.info("Wake word: reply turn opened")
         except Exception as exc:
             logger.error("Wake word: generate_reply failed: %s", exc, exc_info=True)
