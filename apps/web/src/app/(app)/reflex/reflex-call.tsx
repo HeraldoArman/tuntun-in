@@ -898,6 +898,7 @@ function ForceMediaOn() {
 
 export function ReflexCall() {
   const router = useRouter();
+  const profile = useQuery(api.userProfiles.getCurrent);
   const [tokenResponse, setTokenResponse] = useState<TokenResponse | null>(
     null
   );
@@ -1016,7 +1017,11 @@ export function ReflexCall() {
           {/* PreJoin panel */}
           <div className="overflow-hidden rounded-2xl border bg-card shadow-lg ring-1 ring-background">
             <PreJoin
-              defaults={{ videoEnabled: true, audioEnabled: true }}
+              defaults={{
+                videoEnabled: true,
+                audioEnabled: true,
+                username: profile?.fullName ?? "",
+              }}
               joinLabel="Start Reflex Session"
               onError={(err) => {
                 const name = err?.name ?? "Error";
